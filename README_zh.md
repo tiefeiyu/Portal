@@ -14,6 +14,12 @@ pip install -e .
 
 需要 Python 3.11+。
 
+## 卸载
+
+```bash
+pip uninstall portal-mcp
+```
+
 ## 配置
 
 添加到 MCP 客户端配置中（如 Claude Code）：

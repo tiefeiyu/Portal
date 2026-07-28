@@ -18,6 +18,12 @@ pip install -e .
 
 Requires Python 3.11+.
 
+## Uninstall
+
+```bash
+pip uninstall portal-mcp
+```
+
 ## Configuration
 
 Add to your MCP client configuration (e.g., Claude Code):

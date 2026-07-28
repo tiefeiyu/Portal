@@ -57,27 +57,7 @@ created fresh on every server startup.
 
 ## One-Click Install
 
-Copy this prompt to your AI agent to automatically clone, install, and configure Portal:
-
-> Please install Portal MCP Server for me:
->
-> 1. Clone the repository:
->    ```bash
->    git clone ssh://git@10.7.100.21:16783/tiefeiyu/portal.git
->    ```
-> 2. Enter the directory and install:
->    ```bash
->    cd portal && pip install -e .
->    ```
-> 3. Add Portal to Claude Code's MCP configuration (global `mcpServers`):
->    ```json
->    "portal": {
->      "type": "stdio",
->      "command": "python",
->      "args": ["-m", "portal_mcp.server"]
->    }
->    ```
-> 4. Restart Claude Code and verify Portal is available — start a test process to confirm.
+Copy the prompt from [`llms-install.md`](llms-install.md) into your AI agent to automatically install and configure Portal.
 
 ## Tools
 

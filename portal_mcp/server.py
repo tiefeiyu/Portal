@@ -7,6 +7,7 @@ from mcp.server.models import (
     InitializationOptions,
     ServerCapabilities,
 )
+import mcp.server.stdio
 import mcp.types as types
 from portal_mcp.database import Database
 from portal_mcp.manager import ProcessManager

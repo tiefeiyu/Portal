@@ -22,7 +22,18 @@ pip install -e .
 {
   "mcpServers": {
     "portal": {
-      "type": "stdio",
+      "command": "portal-mcp"
+    }
+  }
+}
+```
+
+或者显式指定 Python 路径：
+
+```json
+{
+  "mcpServers": {
+    "portal": {
       "command": "python",
       "args": ["-m", "portal_mcp.server"]
     }

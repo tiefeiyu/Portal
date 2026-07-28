@@ -49,6 +49,30 @@ pip uninstall portal-mcp
 
 环境变量 `PORTAL_DB_PATH` 可指定 SQLite 数据库路径（默认：当前目录下的 `portal.db`）。每次 MCP 服务启动时数据库会重新创建。
 
+## 一键安装
+
+将以下提示词复制给你的 AI Agent，即可自动完成克隆、安装和配置：
+
+> 请帮我安装 Portal MCP Server：
+>
+> 1. 克隆仓库：
+>    ```bash
+>    git clone ssh://git@10.7.100.21:16783/tiefeiyu/portal.git
+>    ```
+> 2. 进入目录并安装：
+>    ```bash
+>    cd portal && pip install -e .
+>    ```
+> 3. 将 Portal 添加到 Claude Code 的 MCP 配置中（全局 `mcpServers`）：
+>    ```json
+>    "portal": {
+>      "type": "stdio",
+>      "command": "python",
+>      "args": ["-m", "portal_mcp.server"]
+>    }
+>    ```
+> 4. 重启 Claude Code，验证 Portal 是否可用——启动一个测试进程确认能正常工作。
+
 ## 工具列表
 
 | 工具 | 说明 |

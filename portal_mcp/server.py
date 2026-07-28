@@ -82,8 +82,11 @@ def main():
                 types.Tool(
                     name="process_start",
                     description=(
-                        "Start a subprocess. Returns the internal "
-                        "process ID, OS PID, and initial status."
+                        "Start a subprocess for interactive use. "
+                        "Use this for interactive programs like SSH, "
+                        "GDB, psql, python REPL, etc. — not for "
+                        "simple one-shot commands. Returns the "
+                        "internal process ID, OS PID, and initial status."
                     ),
                     inputSchema={
                         "type": "object",

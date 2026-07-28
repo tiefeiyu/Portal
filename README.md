@@ -1,7 +1,14 @@
 # Portal MCP Server
 
-An MCP (Model Context Protocol) server for managing subprocesses. Start,
-monitor, read/write I/O, and control processes — all through MCP tool calls.
+An MCP (Model Context Protocol) server purpose-built for **interactive programs**.
+Start, monitor, read/write I/O, and control interactive processes — all through
+MCP tool calls.
+
+**Use for:** SSH remote connections, GDB debugging, database CLIs (psql/mysql),
+REPL environments, and other programs requiring sustained bidirectional interaction.
+
+**Not for:** Simple one-shot commands (`ls`, `echo`, etc.) — use the built-in Shell
+tool for those.
 
 ## Installation
 

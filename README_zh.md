@@ -1,6 +1,10 @@
 # Portal MCP Server
 
-一个用于管理子进程的 MCP（Model Context Protocol）服务器。通过 MCP 工具调用，实现进程的启动、监控、I/O 读写、信号发送和生命周期管理。
+一个专为**交互式程序**设计的 MCP（Model Context Protocol）服务器。通过 MCP 工具调用，实现交互式进程的启动、监控、I/O 读写、信号发送和生命周期管理。
+
+**适用场景：** SSH 远程连接、GDB 调试、数据库 CLI（psql/mysql）、REPL 环境等需要持续交互的程序。
+
+**不适用场景：** 简单的单次命令执行（如 `ls`、`echo`）——这些用 Terminal 自带的 Shell 工具即可。
 
 ## 安装
 

@@ -1,0 +1,16 @@
+[project]
+name = "portal-mcp"
+version = "0.1.0"
+description = "MCP server for managing subprocesses"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp>=1.0.0",
+    "aiosqlite>=0.20.0",
+]
+
+[project.scripts]
+portal-mcp = "portal_mcp.server:main"
+
+[build-system]
+requires = ["setuptools>=75.0"]
+build-backend = "setuptools.build_meta"

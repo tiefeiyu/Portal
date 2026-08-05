@@ -58,9 +58,21 @@ class _WinPtyHandle:
     def spawn(cls, argv, cwd, env, rows, cols):
         from winpty import PtyProcess  # lazy import
 
-        return cls(PtyProcess.spawn(
-            argv, cwd=cwd, env=env, dimensions=(rows, cols)
-        ))
+        # pywinpty defaults to its legacy winpty-agent backend, which
+        # echoes input but never delivers it to the child (only Ctrl+C
+        # is special-cased). Force the real ConPTY backend so that
+        # interactive writes actually reach the child.
+        prev = os.environ.get("PYWINPTY_BACKEND")
+        os.environ["PYWINPTY_BACKEND"] = "1"
+        try:
+            return cls(PtyProcess.spawn(
+                argv, cwd=cwd, env=env, dimensions=(rows, cols)
+            ))
+        finally:
+            if prev is None:
+                os.environ.pop("PYWINPTY_BACKEND", None)
+            else:
+                os.environ["PYWINPTY_BACKEND"] = prev
 
     def __init__(self, pty):
         self._pty = pty

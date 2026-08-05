@@ -320,7 +320,7 @@ The existing MCP instructions text additionally needs two edits (they become wro
 
 ```toml
 dependencies = [
-    "mcp>=1.0.0",
+    "mcp>=1.0.0,<2.0.0",          # code targets the 1.x API (list_tools decorators); mcp 2.x is a breaking API change
     "aiosqlite>=0.20.0",
     "pyte>=0.8.2",                # pulls wcwidth (transitive) for wide-char rendering
     "pywinpty>=3.0.5 ; sys_platform == 'win32'",

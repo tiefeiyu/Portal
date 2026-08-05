@@ -98,8 +98,14 @@ class ProcessManager:
         cwd: str | None = None,
         env: dict[str, str] | None = None,
         timeout_ms: int = 0,
+        pty: bool = False,
     ) -> dict:
         """Start a new subprocess.
+
+        Args:
+            pty: When True, spawn on a virtual PTY (ConPTY on Windows)
+                instead of pipes — for programs that check isatty()
+                or render full-screen TUIs.
 
         Returns:
             Dict with id, os_pid, status keys.
@@ -116,34 +122,47 @@ class ProcessManager:
         )
         await self._db.create_proc_table(proc_id)
 
-        # Merge env with current env if provided
-        process_env = None
-        if env:
-            process_env = os.environ.copy()
-            process_env.update(env)
+        if pty:
+            from portal_mcp.pty_process import PtyProcess  # lazy import
 
-        try:
-            subproc = await asyncio.create_subprocess_exec(
-                command,
-                *args,
-                cwd=cwd,
-                env=process_env,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                stdin=asyncio.subprocess.PIPE,
+            try:
+                mp = await PtyProcess.create(
+                    self._db, proc_id, command, args, cwd, env,
+                    timeout_ms=timeout_ms,
+                )
+            except Exception:
+                await self._db.cleanup_process(proc_id)
+                raise
+            await self._db.update_os_pid(proc_id, mp.os_pid)
+        else:
+            # Merge env with current env if provided
+            process_env = None
+            if env:
+                process_env = os.environ.copy()
+                process_env.update(env)
+
+            try:
+                subproc = await asyncio.create_subprocess_exec(
+                    command,
+                    *args,
+                    cwd=cwd,
+                    env=process_env,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    stdin=asyncio.subprocess.PIPE,
+                )
+            except Exception:
+                await self._db.cleanup_process(proc_id)
+                raise
+
+            await self._db.update_os_pid(proc_id, subproc.pid)
+
+            mp = ManagedProcess(
+                proc_id=proc_id,
+                process=subproc,
+                timeout_ms=timeout_ms,
             )
-        except Exception:
-            await self._db.cleanup_process(proc_id)
-            raise
-
-        await self._db.update_os_pid(proc_id, subproc.pid)
-
-        mp = ManagedProcess(
-            proc_id=proc_id,
-            process=subproc,
-            timeout_ms=timeout_ms,
-        )
-        await mp.start_background_readers(self._db)
+            await mp.start_background_readers(self._db)
         self._processes[proc_id] = mp
 
         # Start an exit-monitor task to update DB status on exit
@@ -151,7 +170,7 @@ class ProcessManager:
 
         return {
             "id": proc_id,
-            "os_pid": subproc.pid,
+            "os_pid": mp.os_pid,
             "status": "running",
         }
 
@@ -194,6 +213,36 @@ class ProcessManager:
         await self._db.touch(proc_id)
 
         return await self._db.read_records(proc_id, sources, since_ts)
+
+    async def screen(
+        self, proc_id: int, cols: int | None = None, rows: int | None = None
+    ) -> dict:
+        """Snapshot the live screen of a PTY process.
+
+        Pure snapshot when cols/rows are omitted (no resize side
+        effect). Passing cols/rows resizes the live PTY first.
+        Touches the idle timer like process_read.
+        """
+        proc = await self._db.get_process(proc_id)
+        if proc is None:
+            raise ValueError(f"Process {proc_id} not found")
+
+        mp = self._processes.get(proc_id)
+        if mp is None:
+            raise ValueError(f"Process {proc_id} not found in manager")
+        if not getattr(mp, "is_pty", False):
+            raise ValueError(f"Process {proc_id} is not a PTY process")
+
+        if cols is not None or rows is not None:
+            new_rows = rows if rows is not None else mp.rows
+            new_cols = cols if cols is not None else mp.cols
+            await mp.resize(new_rows, new_cols)
+
+        await self._db.touch(proc_id)
+        result = mp.screen()
+        result["id"] = proc_id
+        result["status"] = mp.status
+        return result
 
     async def write(self, proc_id: int, content: str) -> dict:
         """Write content to the process stdin.
@@ -240,7 +289,14 @@ class ProcessManager:
         if mp is None:
             raise ValueError(f"Process {proc_id} not found in manager")
 
-        # Convert string signal name to int
+        # PTY processes resolve signal names themselves (their mapping
+        # differs: SIGTERM -> terminate, SIGKILL -> kill, CTRL_C_EVENT
+        # -> write \x03).
+        if getattr(mp, "is_pty", False):
+            await mp.send_signal(sig)
+            return {"id": proc_id, "signal_sent": sig}
+
+        # Convert string signal name to int (pipe mode)
         if isinstance(sig, str):
             sig_num = getattr(signal, sig, None)
             if sig_num is None:

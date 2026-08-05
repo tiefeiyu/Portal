@@ -414,3 +414,183 @@ class TestRealConPTY:
         )
         await wait_records(pty_db, pid, "got 4096")
         await mp.kill()
+
+
+from portal_mcp.manager import ProcessManager
+
+
+@pytest.fixture
+async def pty_manager():
+    pytest.importorskip("winpty")
+    pytest.importorskip("pyte")
+    fd, path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    db = Database(path)
+    await db.initialize()
+    mgr = ProcessManager(db)
+    yield mgr
+    await mgr.shutdown()
+    await db.close()
+    if os.path.exists(path):
+        os.unlink(path)
+
+
+async def wait_mgr_records(mgr, pid, needle, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        records = await mgr.read(pid, "both", 2000, "ms")
+        contents = "".join(r["content"] for r in records)
+        if needle in contents:
+            return contents
+        await asyncio.sleep(0.05)
+    raise AssertionError(f"needle {needle!r} not seen: {contents!r}")
+
+
+class TestManagerPty:
+    async def test_start_pty_flag(self, pty_manager):
+        result = await pty_manager.start(
+            command=sys.executable,
+            args=["-c",
+                  "import sys; "
+                  "sys.exit(0 if sys.stdout.isatty() else 1)"],
+            pty=True,
+        )
+        assert result["status"] == "running"
+        assert result["os_pid"] > 0
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            info = await pty_manager.inspect(result["id"])
+            if info["status"] != "running":
+                break
+            await asyncio.sleep(0.05)
+        assert info["status"] == "exited"
+
+    async def test_pipe_mode_isatty_false(self, pty_manager):
+        result = await pty_manager.start(
+            command=sys.executable,
+            args=["-c",
+                  "import sys; "
+                  "sys.exit(0 if sys.stdout.isatty() else 1)"],
+        )
+        assert result["status"] == "running"
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            info = await pty_manager.inspect(result["id"])
+            if info["status"] != "running":
+                break
+            await asyncio.sleep(0.05)
+        assert info["status"] == "exited"
+        assert info["exit_code"] == 1
+
+    async def test_pty_exit_code_is_none(self, pty_manager):
+        result = await pty_manager.start(
+            command=sys.executable,
+            args=["-c", "pass"],
+            pty=True,
+        )
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            info = await pty_manager.inspect(result["id"])
+            if info["status"] != "running":
+                break
+            await asyncio.sleep(0.05)
+        assert info["exit_code"] is None
+
+    async def test_spawn_failure_cleans_up(self, pty_manager):
+        with pytest.raises(Exception):
+            await pty_manager.start(
+                command="C:\\definitely\\missing\\binary_xyz_123.exe",
+                pty=True,
+            )
+        assert await pty_manager.list_all() == []
+
+    async def test_screen_pipe_mode_errors(self, pty_manager):
+        result = await pty_manager.start(
+            command=sys.executable,
+            args=["-c", "import time; time.sleep(30)"],
+        )
+        with pytest.raises(ValueError, match="not a PTY process"):
+            await pty_manager.screen(result["id"])
+
+    async def test_screen_unknown_id(self, pty_manager):
+        with pytest.raises(ValueError, match="not found"):
+            await pty_manager.screen(99999)
+
+    async def test_screen_via_manager(self, pty_manager):
+        result = await pty_manager.start(
+            command=sys.executable,
+            args=["-c",
+                  "import sys, time; "
+                  "sys.stdout.write('\\x1b[H'); "
+                  "sys.stdout.write('SCREEN HERE'); "
+                  "sys.stdout.flush(); time.sleep(30)"],
+            pty=True,
+        )
+        deadline = time.monotonic() + 5
+        snap = None
+        while time.monotonic() < deadline:
+            snap = await pty_manager.screen(result["id"])
+            if "SCREEN HERE" in snap["content"]:
+                break
+            await asyncio.sleep(0.05)
+        assert "SCREEN HERE" in snap["content"]
+        assert snap["buffer"] == "primary"
+
+    async def test_screen_resize_and_touch(self, pty_manager):
+        result = await pty_manager.start(
+            command=sys.executable,
+            args=["-c", "import time; time.sleep(30)"],
+            pty=True,
+            timeout_ms=5000,
+        )
+        snap = await pty_manager.screen(result["id"], cols=60, rows=20)
+        assert snap["cols"] == 60 and snap["rows"] == 20
+        proc = await pty_manager.inspect(result["id"])
+        assert proc["status"] == "running"  # screen read touched idle timer
+        await pty_manager.do_kill(result["id"])
+
+    async def test_timeout_monitor_kills_pty(self, pty_manager):
+        await pty_manager.start_monitor()
+        result = await pty_manager.start(
+            command=sys.executable,
+            args=["-c", "import time; time.sleep(30)"],
+            pty=True,
+            timeout_ms=300,
+        )
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                await pty_manager.inspect(result["id"])
+            except ValueError:
+                break
+            await asyncio.sleep(0.05)
+        else:
+            raise AssertionError("PTY process not cleaned up by monitor")
+
+    async def test_send_signal_pty(self, pty_manager):
+        result = await pty_manager.start(
+            command=sys.executable,
+            args=["-c", "import time; time.sleep(30)"],
+            pty=True,
+        )
+        await pty_manager.send_signal(result["id"], "SIGTERM")
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            info = await pty_manager.inspect(result["id"])
+            if info["status"] != "running":
+                break
+            await asyncio.sleep(0.05)
+        assert info["status"] in ("exited", "killed")
+
+    async def test_write_pty_echo_roundtrip(self, pty_manager):
+        result = await pty_manager.start(
+            command=sys.executable,
+            args=["-c", "input('prompt> ')"],
+            pty=True,
+        )
+        await wait_mgr_records(pty_manager, result["id"], "prompt>")
+        await pty_manager.write(result["id"], "hello pty\r")
+        await wait_mgr_records(pty_manager, result["id"], "hello pty")
+        await pty_manager.do_kill(result["id"])
+        assert await pty_manager.list_all() != []  # killed, retained
+        await pty_manager.do_cleanup(result["id"])

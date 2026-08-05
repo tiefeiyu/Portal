@@ -177,7 +177,7 @@ The new registry tools keep the `program_*` prefix (not `process_program_*`): th
 | Operation | Windows (ConPTY) | POSIX (ptyprocess) |
 |-----------|------------------|--------------------|
 | Ctrl+C | `process_write` with `\u0003` followed by `\r` (the CR flushes ConPTY's line buffer; write, wait, then terminate if still alive) | same (standard) |
-| SIGTERM / terminate | `terminate()` — **immediate hard kill** (TerminateProcess, exit code 2). pywinpty's `terminate()` calls `kill(SIGINT)`, and Windows `os.kill` maps SIGINT to TerminateProcess; **no graceful step exists** | SIGTERM |
+| SIGTERM / terminate | `terminate()` — **immediate hard kill** (TerminateProcess, exit code 2). pywinpty's `terminate()` calls `kill(SIGINT)`, and Windows `os.kill` maps SIGINT to TerminateProcess; **no graceful step exists** | `terminate()` — ptyprocess sends SIGHUP by default, not SIGTERM (behaviorally similar for most programs; a SIGHUP-trapping process survives — documented) |
 | SIGKILL / kill | `kill(SIGKILL)` → TerminateProcess (exit code 9) | SIGKILL |
 | Exit detection | `EOFError` **or** `not isalive()` → status exited; `exit_code` = None | `EOFError` → exited, real exit code |
 

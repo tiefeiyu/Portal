@@ -260,9 +260,10 @@ class PtyProcess:
                 # line and triggers the interrupt (user-confirmed form).
                 self._handle.write("\x03\r")
                 return
-            sig = getattr(signal, sig, None)
-            if sig is None:
+            resolved = getattr(signal, sig, None)
+            if resolved is None:
                 raise ValueError(f"Unknown signal: {sig}")
+            sig = resolved
         if sig == signal.SIGTERM:
             await self.terminate()
         elif sig == _SIGKILL:  # Windows Python has no signal.SIGKILL

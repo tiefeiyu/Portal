@@ -30,7 +30,10 @@ def _signal_help() -> str:
         return (
             f"{common} Windows supports: "
             "CTRL_C_EVENT (0), CTRL_BREAK_EVENT (1). "
-            "SIGTERM is mapped to TerminateProcess."
+            "SIGTERM is mapped to TerminateProcess. "
+            "For PTY processes: SIGTERM -> terminate (hard kill on "
+            "Windows), SIGKILL -> kill, CTRL_C_EVENT -> Ctrl+C; for "
+            "a graceful interrupt use process_write with \u0003 followed by a carriage return."
         )
     else:
         names = [
@@ -98,7 +101,21 @@ def main():
                         "Use this for interactive programs like SSH, "
                         "GDB, psql, python REPL, etc. — not for "
                         "simple one-shot commands. Returns the "
-                        "internal process ID, OS PID, and initial status."
+                        "internal process ID, OS PID, and initial "
+                        "status.\n"
+                        "\n"
+                        "pty — default false for backward "
+                        "compatibility; this is NOT a "
+                        "recommendation. Set true for anything "
+                        "interactive or TUI (ssh, gdb, psql/mysql, "
+                        "REPLs, vim, htop, top, less; anything with "
+                        "-i/-it/-t flags). Consult program_query for "
+                        "this executable BEFORE starting. When in "
+                        "doubt, true — a non-interactive program "
+                        "tolerates a PTY; an interactive one without "
+                        "one hangs. Exception: one-shot commands that "
+                        "page output (git log/diff, less) — prefer "
+                        "pipe mode with --no-pager/GIT_PAGER=cat."
                     ),
                     inputSchema={
                         "type": "object",
@@ -139,6 +156,18 @@ def main():
                                 ),
                                 "default": 0,
                             },
+                            "pty": {
+                                "type": "boolean",
+                                "description": (
+                                    "Run on a virtual PTY instead of "
+                                    "pipes. True for programs that "
+                                    "need a terminal (see tool "
+                                    "description). Default false for "
+                                    "backward compatibility — NOT a "
+                                    "recommendation."
+                                ),
+                                "default": False,
+                            },
                         },
                         "required": ["command"],
                     },
@@ -148,7 +177,15 @@ def main():
                     description=(
                         "Read output from a process. Reads records "
                         "from the specified time window. Resets the "
-                        "process idle timer."
+                        "process idle timer.\n"
+                        "\n"
+                        "For PTY processes stderr is merged into "
+                        "stdout (source=stderr reads return empty) "
+                        "and records are arbitrary chunks, not lines "
+                        "— a line may span multiple records. Prompts "
+                        "may arrive without a trailing newline. Read "
+                        "with a generous duration — the default "
+                        "window is only 1s."
                     ),
                     inputSchema={
                         "type": "object",
@@ -191,7 +228,16 @@ def main():
                     name="process_write",
                     description=(
                         "Write content to a process's stdin. "
-                        "Only available while the process is running."
+                        "Only available while the process is running.\n"
+                        "\n"
+                        "Input you write reappears in the output "
+                        "stream (terminal echo) — treat it as your "
+                        "own input, not program output, and do not "
+                        "re-send it. To interrupt a PTY process, "
+                        "send \u0003 followed by a carriage return (Ctrl+C then Enter — ConPTY is line-buffered, the CR triggers it); a KeyboardInterrupt "
+                        "traceback in output is expected, not an "
+                        "error. process_signal/process_kill are "
+                        "hard-stop fallbacks."
                     ),
                     inputSchema={
                         "type": "object",
@@ -248,7 +294,12 @@ def main():
                     description=(
                         "Get detailed information about a single "
                         "process including all metadata and per-stream "
-                        "I/O counts."
+                        "I/O counts.\n"
+                        "\n"
+                        "For PTY processes: stderr_count is always 0 "
+                        "(merged stream) and I/O counts are "
+                        "chunk-based, not line-based; exit_code is "
+                        "null on Windows (ConPTY exposes none)."
                     ),
                     inputSchema={
                         "type": "object",
@@ -318,6 +369,42 @@ def main():
                             "id": {
                                 "type": "integer",
                                 "description": "Internal process ID.",
+                            },
+                        },
+                        "required": ["id"],
+                    },
+                ),
+                types.Tool(
+                    name="process_screen",
+                    description=(
+                        "Snapshot the live screen of a PTY process. "
+                        "For full-screen TUIs (vim, htop, less): the "
+                        "record stream is garbled fragments — use "
+                        "this tool instead of process_read. Screen "
+                        "remains queryable after exit until "
+                        "process_cleanup. Snapshot is pure; passing "
+                        "cols/rows resizes the live PTY first. "
+                        "buffer is 'primary' or 'alternate' (the "
+                        "TUI's alternate screen)."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "id": {
+                                "type": "integer",
+                                "description": "Internal process ID.",
+                            },
+                            "cols": {
+                                "type": "integer",
+                                "description": (
+                                    "Optional: resize width first."
+                                ),
+                            },
+                            "rows": {
+                                "type": "integer",
+                                "description": (
+                                    "Optional: resize height first."
+                                ),
                             },
                         },
                         "required": ["id"],
@@ -397,6 +484,7 @@ def main():
                         cwd=arguments.get("cwd"),
                         env=arguments.get("env"),
                         timeout_ms=arguments.get("timeout_ms", 0),
+                        pty=arguments.get("pty", False),
                     )
                     return [
                         types.TextContent(
@@ -572,6 +660,27 @@ def main():
                         )
                     ]
 
+                elif name == "process_screen":
+                    snap = await manager.screen(
+                        proc_id=arguments["id"],
+                        cols=arguments.get("cols"),
+                        rows=arguments.get("rows"),
+                    )
+                    return [
+                        types.TextContent(
+                            type="text",
+                            text=(
+                                f"Process {snap['id']} "
+                                f"(status={snap['status']}, "
+                                f"buffer={snap['buffer']}, "
+                                f"{snap['cols']}x{snap['rows']}, "
+                                f"cursor=({snap['cursor_x']},"
+                                f"{snap['cursor_y']})):\n"
+                                f"{snap['content']}"
+                            ),
+                        )
+                    ]
+
                 elif name == "program_query":
                     result = await manager.query_program(
                         arguments["program"]
@@ -682,7 +791,11 @@ def main():
                         "- Run over a remote connection (SSH, serial "
                         "consoles, telnet, any remote-exec tool)\n"
                         "- Use interactive flags: `-i`, `--interactive`, "
-                        "`-t`, `--tty`\n"
+                        "`-t`, `--tty`. These flags go in the command's "
+                        "`args` — they configure the program's own "
+                        "terminal. The `pty` param on `process_start` "
+                        "grants the LOCAL terminal. Tools like docker "
+                        "need both.\n"
                         "- Are long-running and you might need to inspect, "
                         "signal, or interact with them partway through\n"
                         "\n"
@@ -701,14 +814,69 @@ def main():
                         "waiting\n"
                         "4. Repeat 2–3 as the conversation with the "
                         "process continues\n"
-                        "5. `process_signal` or `process_kill` — stop "
-                        "the process\n"
+                        "5. To interrupt a PTY process, `process_write` "
+                        "with `\u0003` then a carriage return (Ctrl+C + Enter — ConPTY is line-buffered); `process_signal` / "
+                        "`process_kill` are hard-stop fallbacks\n"
                         "6. `process_cleanup` — remove finished process "
                         "data\n"
                         "\n"
                         "Also use `process_list` to see what's running "
                         "and `process_inspect` to check details on a "
                         "specific process.\n"
+                        "\n"
+                        "## When a program needs `pty: true`\n"
+                        "\n"
+                        "Set `pty: true` on `process_start` for:\n"
+                        "- Programs that check isatty(): ssh, gdb, "
+                        "psql, mysql, telnet, interactive REPLs\n"
+                        "- Full-screen TUIs: vim, htop, top, less, man\n"
+                        "- Anything with -i/-it/-t flags\n"
+                        "\n"
+                        "Prefer pipe mode (pty: false, the default) "
+                        "for one-shot scripts and batch commands — "
+                        "and for one-shot commands that page output "
+                        "(git log/diff, less) use --no-pager or "
+                        "GIT_PAGER=cat, since with pty: true they sit "
+                        "in the pager and look hung.\n"
+                        "\n"
+                        "When in doubt, use pty: true — a "
+                        "non-interactive program tolerates a PTY; an "
+                        "interactive one without one hangs.\n"
+                        "\n"
+                        "## Decision priority: registry first\n"
+                        "\n"
+                        "Before starting a program, call "
+                        "`program_query`. A hit settles it (check "
+                        "`notes` for flag-specific caveats — e.g. a "
+                        "docker entry may only cover `docker run -it`, "
+                        "not `docker build`). A miss is normal — apply "
+                        "the rules above. confirmed_count >= 2 means "
+                        "settled; a single confirmation is a hint — "
+                        "re-verify on first use.\n"
+                        "\n"
+                        "## Hang check and escalation\n"
+                        "\n"
+                        "When a process seems hung, read with a "
+                        "generous window (duration=10000, unit ms — "
+                        "the default 1s window misses older output "
+                        "and looks identical to a hang). Treat as a "
+                        "hang only if reads keep returning empty AND "
+                        "process_list shows io_count unchanged after "
+                        "several seconds. Set timeout_ms on every "
+                        "escalated attempt so a real hang "
+                        "self-terminates. On hang: kill, restart with "
+                        "pty: true. If a pty: true process sits in a "
+                        "pager, send q then Enter (or \u0003 + Enter), kill, restart "
+                        "without pty.\n"
+                        "\n"
+                        "## Registry feedback loop\n"
+                        "\n"
+                        "Record every first-encounter conclusion via "
+                        "`program_record` — including negatives "
+                        "(needs_pty=false when the program ran fine "
+                        "without a PTY). The registry is "
+                        "agent-populated; it only helps future "
+                        "sessions if every encounter is recorded.\n"
                         "\n"
                         "## Remember\n"
                         "\n"

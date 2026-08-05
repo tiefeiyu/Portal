@@ -5,7 +5,7 @@ description = "MCP server for managing subprocesses"
 requires-python = ">=3.11"
 dependencies = [
     "mcp>=1.0.0,<2.0.0",       # code targets the 1.x API (list_tools decorators)
-    "aiosqlite>=0.20.0",
+    "aiosqlite>=0.22.1",
     "pyte>=0.8.2",
     "pywinpty>=3.0.5 ; sys_platform == 'win32'",
     "ptyprocess ; sys_platform != 'win32'",

@@ -1370,7 +1370,7 @@ class PtyProcess:
                 raise ValueError(f"Unknown signal: {sig}")
         if sig == signal.SIGTERM:
             await self.terminate()
-        elif sig == signal.SIGKILL:
+        elif sig == _SIGKILL:  # NOT signal.SIGKILL — it does not exist on Windows
             await self.kill()
         else:
             raise ValueError(

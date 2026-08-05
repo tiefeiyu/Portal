@@ -121,11 +121,14 @@ class TestServerTools:
         assert (await portal.query_program("GDB.EXE"))["needs_pty"] is True
 
     async def test_default_db_path_is_per_instance(self):
+        import re
         from portal_mcp.server import _default_db_path
 
         path = _default_db_path()
-        assert str(os.getpid()) in path
-        assert path.endswith(".db")
+        # portal-<pid>-<ms>[-<counter>].db — timestamped history naming
+        assert re.fullmatch(
+            r"portal-\d+-\d+(?:-\d+)?\.db", os.path.basename(path)
+        )
         assert os.path.dirname(path) == ".portal"
         # two calls in the same process must yield different files
         assert _default_db_path() != path

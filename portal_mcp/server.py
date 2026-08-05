@@ -1,6 +1,7 @@
 """Portal MCP Server — entry point and tool registration."""
 import os
 import sys
+import time
 
 from mcp.server import Server
 from mcp.server.models import (
@@ -18,20 +19,32 @@ from portal_mcp.registry import Registry
 SERVER_NAME = "portal"
 SERVER_VERSION = "0.1.0"
 
+_last_ms = -1
+_same_ms_counter = 0
+
+
 def _default_db_path() -> str:
     """Per-instance session DB path.
 
-    One SQLite file per server instance (pid + short random suffix):
-    the session DB is created fresh on every startup, and a
-    per-instance name means a lingering/zombie server — or a second
-    instance in the same process (tests) — can never lock the file and
-    block a new instance from starting in the same working directory.
+    One SQLite file per server instance, named with a millisecond
+    timestamp so each instance's session data doubles as searchable
+    history (`.portal/portal-<pid>-<ms>.db`). A per-instance name means
+    a lingering/zombie server — or a second instance in the same
+    process (tests) — can never lock the file and block a new instance
+    from starting in the same working directory. The counter suffix
+    only appears when two instances are created in the same millisecond
+    (same process), keeping names unique.
     """
-    from uuid import uuid4
+    global _last_ms, _same_ms_counter
 
-    return os.path.join(
-        ".portal", f"portal-{os.getpid()}-{uuid4().hex[:8]}.db"
-    )
+    ms = time.time_ns() // 1_000_000
+    if ms == _last_ms:
+        _same_ms_counter += 1
+    else:
+        _same_ms_counter = 0
+        _last_ms = ms
+    suffix = str(ms) + (f"-{_same_ms_counter}" if _same_ms_counter else "")
+    return os.path.join(".portal", f"portal-{os.getpid()}-{suffix}.db")
 
 
 def _signal_help() -> str:
@@ -911,13 +924,8 @@ def main():
         # Cleanup on exit
         await manager.shutdown()
         await db.close()
-        # Best-effort: remove this instance's session DB (per-instance
-        # files would otherwise accumulate in .portal/).
-        if not os.environ.get("PORTAL_DB_PATH") and os.path.exists(db_path):
-            try:
-                os.unlink(db_path)
-            except OSError:
-                pass
+        # The per-instance session DB is intentionally retained as
+        # timestamped history in .portal/ (user preference).
 
     asyncio.run(run())
 

@@ -217,7 +217,7 @@ The new registry tools keep the `program_*` prefix (not `process_program_*`): th
   - Linux: `$XDG_DATA_HOME/portal-mcp/` (default `~/.local/share/portal-mcp`)
 - **Persistent across sessions** — never deleted on startup. `create_server`'s startup unlink touches only the session `db_path`.
 - Path resolution in new `portal_mcp/paths.py` (~15 lines, no new dependency). **`PORTAL_DATA_DIR` is read on every call** — no module-level caching, so tests can monkeypatch it.
-- Session DB is per-instance: `<cwd>/.portal/portal-<pid>.db` — per-project session data is cwd-scoped, created fresh on every startup, and the pid-scoped name means a lingering/zombie server instance can never lock the file and block a new instance in the same directory (validated: the old fixed name raised PermissionError at startup while a previous instance held the file open). The instance removes its own file on graceful exit.
+- Session DB is per-instance: `<cwd>/.portal/portal-<pid>-<ms>.db` (ms = millisecond timestamp; a counter suffix appears only for same-millisecond collisions in one process) — per-project session data is cwd-scoped, created fresh on every startup, and the per-instance name means a lingering/zombie server instance can never lock the file and block a new instance in the same directory (validated: the old fixed name raised PermissionError at startup while a previous instance held the file open). Instance files are retained as timestamped history (user preference — no cleanup on exit).
 - Registry connection: one aiosqlite connection, loop-bound, opened via `registry.open()` / closed via `registry.close()` — same pattern as `Database`.
 
 ### Schema

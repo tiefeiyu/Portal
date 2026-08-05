@@ -12,43 +12,37 @@ tool for those.
 
 ## Installation
 
-```bash
-pip install -e .
-```
-
-Requires Python 3.11+.
-
-## Uninstall
+No package installation needed — Portal runs directly with `uv`:
 
 ```bash
-pip uninstall portal-mcp
+uv sync   # optional: pre-create .venv; `uv run` auto-syncs on first launch
 ```
+
+Requires [uv](https://docs.astral.sh/uv/) and Python 3.11+. Dependencies are
+managed by uv from `pyproject.toml`: `mcp` (1.x), `aiosqlite`, `pyte`, plus
+`pywinpty` (Windows) / `ptyprocess` (POSIX).
 
 ## Configuration
 
-Add to your MCP client configuration (e.g., Claude Code):
+Add to your MCP client configuration (e.g., Claude Code), substituting
+`<PORTAL_PATH>` with the absolute path of this repo:
 
 ```json
 {
   "mcpServers": {
     "portal": {
-      "command": "portal-mcp"
+      "type": "stdio",
+      "command": "uv",
+      "args": ["run", "--project", "<PORTAL_PATH>", "portal-mcp"]
     }
   }
 }
 ```
 
-Or with explicit Python path:
+Claude Code one-liner:
 
-```json
-{
-  "mcpServers": {
-    "portal": {
-      "command": "python",
-      "args": ["-m", "portal_mcp.server"]
-    }
-  }
-}
+```bash
+claude mcp add portal -- uv run --project "<PORTAL_PATH>" portal-mcp
 ```
 
 The `PORTAL_DB_PATH` environment variable controls the SQLite database
@@ -246,12 +240,11 @@ Portal MCP Server
 ## Development
 
 ```bash
-# Install dev dependencies
-pip install -e .
-pip install pytest pytest-asyncio
+# Sync the uv environment (includes pytest)
+uv sync
 
 # Run tests
-pytest tests/ -v
+uv run pytest tests/ -v
 ```
 
 ## License

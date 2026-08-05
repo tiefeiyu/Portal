@@ -8,43 +8,36 @@
 
 ## 安装
 
-```bash
-pip install -e .
-```
-
-需要 Python 3.11+。
-
-## 卸载
+无需安装包 —— 直接用 `uv` 运行：
 
 ```bash
-pip uninstall portal-mcp
+uv sync   # 可选：预创建 .venv；`uv run` 首次启动时自动同步
 ```
+
+需要 [uv](https://docs.astral.sh/uv/) 和 Python 3.11+。依赖由 uv 根据
+`pyproject.toml` 管理：`mcp`（1.x）、`aiosqlite`、`pyte`，以及
+`pywinpty`（Windows）/ `ptyprocess`（POSIX）。
 
 ## 配置
 
-添加到 MCP 客户端配置中（如 Claude Code）：
+添加到 MCP 客户端配置中（如 Claude Code），将 `<PORTAL_PATH>` 替换为本仓库的绝对路径：
 
 ```json
 {
   "mcpServers": {
     "portal": {
-      "command": "portal-mcp"
+      "type": "stdio",
+      "command": "uv",
+      "args": ["run", "--project", "<PORTAL_PATH>", "portal-mcp"]
     }
   }
 }
 ```
 
-或者显式指定 Python 路径：
+Claude Code 一行命令：
 
-```json
-{
-  "mcpServers": {
-    "portal": {
-      "command": "python",
-      "args": ["-m", "portal_mcp.server"]
-    }
-  }
-}
+```bash
+claude mcp add portal -- uv run --project "<PORTAL_PATH>" portal-mcp
 ```
 
 环境变量 `PORTAL_DB_PATH` 可指定 SQLite 数据库路径。默认情况下每个服务实例使用自己的文件：当前目录下 `.portal/portal-<pid>-<时间戳>.db` —— 每次启动全新创建、以带时间戳的历史文件保留，且按实例命名，残留或并发的服务器实例不会锁住文件阻塞新实例启动。
@@ -222,12 +215,11 @@ Portal MCP Server
 ## 开发
 
 ```bash
-# 安装开发依赖
-pip install -e .
-pip install pytest pytest-asyncio
+# 同步 uv 环境（包含 pytest）
+uv sync
 
 # 运行测试
-pytest tests/ -v
+uv run pytest tests/ -v
 ```
 
 ## License

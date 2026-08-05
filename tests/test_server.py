@@ -119,3 +119,25 @@ class TestServerTools:
         assert result["known"] is True
         assert result["needs_pty"] is True
         assert (await portal.query_program("GDB.EXE"))["needs_pty"] is True
+
+    async def test_default_db_path_is_per_instance(self):
+        from portal_mcp.server import _default_db_path
+
+        path = _default_db_path()
+        assert str(os.getpid()) in path
+        assert path.endswith(".db")
+        assert os.path.dirname(path) == ".portal"
+        # two calls in the same process must yield different files
+        assert _default_db_path() != path
+
+    async def test_two_servers_no_lock_conflict(self, tmp_path, monkeypatch):
+        """Two instances in the same cwd must not collide on the DB file
+        (regression: the old fixed name let the first instance's open
+        SQLite file block the second instance's startup unlink)."""
+        monkeypatch.chdir(tmp_path)
+        manager1, db1 = await create_server()
+        manager2, db2 = await create_server()  # must NOT raise
+        await manager1.shutdown()
+        await db1.close()
+        await manager2.shutdown()
+        await db2.close()

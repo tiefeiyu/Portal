@@ -18,7 +18,20 @@ from portal_mcp.registry import Registry
 SERVER_NAME = "portal"
 SERVER_VERSION = "0.1.0"
 
-DEFAULT_DB_PATH = os.path.join(".portal", "portal.db")
+def _default_db_path() -> str:
+    """Per-instance session DB path.
+
+    One SQLite file per server instance (pid + short random suffix):
+    the session DB is created fresh on every startup, and a
+    per-instance name means a lingering/zombie server — or a second
+    instance in the same process (tests) — can never lock the file and
+    block a new instance from starting in the same working directory.
+    """
+    from uuid import uuid4
+
+    return os.path.join(
+        ".portal", f"portal-{os.getpid()}-{uuid4().hex[:8]}.db"
+    )
 
 
 def _signal_help() -> str:
@@ -52,14 +65,16 @@ async def create_server(
     """Create and configure the Portal MCP server.
 
     Args:
-        db_path: Path to SQLite database. Defaults to '.portal/portal.db'
-            in the current directory.
+        db_path: Path to SQLite database. Defaults to a per-instance
+            '.portal/portal-<pid>.db' in the current directory (fresh
+            per startup; pid-scoped so concurrent instances never
+            collide on the file lock).
 
     Returns:
         Tuple of (ProcessManager, Database) for testing.
     """
     if db_path is None:
-        db_path = DEFAULT_DB_PATH
+        db_path = _default_db_path()
 
     # Create the database directory if it doesn't exist
     db_dir = os.path.dirname(db_path)
@@ -87,7 +102,7 @@ def main():
     import asyncio
 
     async def run():
-        db_path = os.environ.get("PORTAL_DB_PATH", DEFAULT_DB_PATH)
+        db_path = os.environ.get("PORTAL_DB_PATH", _default_db_path())
         manager, db = await create_server(db_path)
         server = Server(SERVER_NAME, version=SERVER_VERSION)
 
@@ -896,6 +911,13 @@ def main():
         # Cleanup on exit
         await manager.shutdown()
         await db.close()
+        # Best-effort: remove this instance's session DB (per-instance
+        # files would otherwise accumulate in .portal/).
+        if not os.environ.get("PORTAL_DB_PATH") and os.path.exists(db_path):
+            try:
+                os.unlink(db_path)
+            except OSError:
+                pass
 
     asyncio.run(run())
 

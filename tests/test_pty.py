@@ -210,6 +210,8 @@ class TestFakeHandlePipeline:
         await mp.start(pty_db)
         await mp.terminate()
         assert handle.terminated is True
+        # wait_exit must never hang after terminate (exit-monitor path)
+        await asyncio.wait_for(mp.wait_exit(), timeout=3)
 
     async def test_send_signal_mapping(self, pty_db):
         pid = await _make_pid(pty_db, command="fake")
@@ -220,7 +222,7 @@ class TestFakeHandlePipeline:
         assert handle.terminated is True
         handle.alive = True  # reuse for next signal
         await mp.send_signal("CTRL_C_EVENT")
-        assert handle.written == ["\x03"]
+        assert handle.written == ["\x03\r"]  # CR flushes ConPTY line buffer
         handle.alive = True
         await mp.send_signal("SIGKILL")  # must come last — kill sets status
         assert handle.killed == [signal.SIGKILL]

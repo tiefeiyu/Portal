@@ -213,7 +213,7 @@ class PtyProcess:
         """Resolve a signal name-or-int to a PTY-appropriate action.
 
         SIGTERM -> terminate(), SIGKILL -> kill(),
-        CTRL_C_EVENT -> write '\\x03' (the reliable Ctrl+C under ConPTY).
+        CTRL_C_EVENT -> write '\\x03\\r' (CR flushes ConPTY's line buffer).
         """
         if self.status != "running":
             raise RuntimeError(
@@ -227,7 +227,10 @@ class PtyProcess:
                 await self.kill()
                 return
             if sig == "CTRL_C_EVENT":
-                self._handle.write("\x03")
+                # Under ConPTY cooked mode a bare \x03 is line-buffered
+                # and never becomes Ctrl+C; the following CR commits the
+                # line and triggers the interrupt (user-confirmed form).
+                self._handle.write("\x03\r")
                 return
             sig = getattr(signal, sig, None)
             if sig is None:
@@ -250,7 +253,9 @@ class PtyProcess:
             self._handle.kill(_SIGKILL)
         except Exception:
             pass
-        self._handle.close()  # unblocks a stuck blocking read()
+        # close() is a blocking C call that can stall for seconds on
+        # some backends — offload it so the event loop never freezes.
+        await asyncio.to_thread(self._handle.close)  # unblocks a stuck read()
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=2.0)
         if self._consumer_task:
@@ -266,9 +271,13 @@ class PtyProcess:
             self._handle.terminate()
         except Exception:
             pass
-        self._handle.close()
+        await asyncio.to_thread(self._handle.close)
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=2.0)
+        # Same backstop as kill(): if the reader thread exited at the
+        # _stop check without pushing eof, wait_exit() would hang on
+        # _exited forever (the exit monitor awaits it).
+        self._exited.set()
 
     async def wait_exit(self) -> int | None:
         """Wait for the reader to signal EOF; may return None.

@@ -363,6 +363,9 @@ class Registry:
             "needs_pty": bool(row["needs_pty"]),
             "notes": row["notes"],
             "confirmed_count": row["confirmed_count"],
+            "last_confirmed_at": row["last_confirmed_at"],
+            "known": True,  # discriminator — record() and the server
+            # handler branch on it (miss shape carries known: False)
         }
 
     async def record(
@@ -1453,7 +1456,7 @@ class TestRealConPTY:
         )
         await asyncio.wait_for(mp.wait_exit(), timeout=10)
         assert mp.status == "exited"
-        assert mp._handle.exitstatus is None or mp._handle.exitstatus == 0
+        assert mp._handle.exitstatus is None  # Windows ConPTY contract
 
     async def test_prompt_without_newline(self, pty_db):
         pid = await _make_pid(pty_db, command=sys.executable)

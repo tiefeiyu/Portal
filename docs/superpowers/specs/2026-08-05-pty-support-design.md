@@ -18,7 +18,7 @@ Existing pipe mode, its 10 tools, the SQLite schema, and all current tests remai
 | Record granularity (PTY) | Chunk-based records instead of line-based | `readline()` blocks forever on prompts without `\n` and TUI redraws |
 | Screen exposure | New `process_screen` tool | Read records = history, read screen = current state; separate concerns |
 | Registry location | Platform app-data dir + `PORTAL_DATA_DIR` override | Machine-global, survives venv rebuilds, independent of cwd and install method |
-| Registry population | Agent writes (`program_record`) + automatic error-pattern capture | Registry must not depend on the agent remembering to record |
+| Registry population | Agent writes via `program_record` only | Judgment is the agent's job (it observes behavior: "not a tty" errors, hangs, TUI rendering); the server only stores confirmed facts — no fragile server-side pattern matching |
 | Registry startup | Empty; no seed list | Cold start covered by documented decision rules; no stale static list to maintain |
 
 ## Architecture
@@ -110,14 +110,14 @@ Output: { id, status, rows, cols, cursor_x, cursor_y, content }
 
 ```
 Input:  program (required, executable name)
-Output: { program, needs_pty, source, notes, confirmed_count } or unknown
+Output: { program, needs_pty, notes, confirmed_count } or unknown
 ```
 
 ### `program_record` (new)
 
 ```
 Input:  program (required), needs_pty (required), notes (optional)
-Effect: upsert into registry; agent writes override auto-captured entries
+Effect: upsert into registry; repeated confirmation increments confirmed_count
 ```
 
 ## Signals & Lifecycle
@@ -148,6 +148,8 @@ Effect: upsert into registry; agent writes override auto-captured entries
 
 **Decision priority**: registry hit → use it; miss → decision-table heuristic; still unsure → `pty: true`.
 
+**Feedback loop**: after observing a program's behavior (TTY error, hang, or successful TUI rendering), record the conclusion via `program_record` — the next session starts from the registry instead of re-judging.
+
 ## Program Registry
 
 ### Storage
@@ -166,7 +168,6 @@ Effect: upsert into registry; agent writes override auto-captured entries
 CREATE TABLE programs (
     program           TEXT PRIMARY KEY,          -- canonical basename, lowercase
     needs_pty         INTEGER NOT NULL,          -- 0/1
-    source            TEXT NOT NULL,             -- 'agent' | 'auto'
     notes             TEXT DEFAULT '',
     confirmed_count   INTEGER NOT NULL DEFAULT 1,
     last_confirmed_at INTEGER NOT NULL           -- ns timestamp
@@ -175,15 +176,9 @@ CREATE TABLE programs (
 
 Starts empty; no seed list.
 
-### Write paths
+### Write path
 
-1. **Agent** (primary): `program_record` after observing a program's behavior.
-2. **Automatic capture** (fallback): pipe-mode processes whose output matches known "needs TTY" error patterns **and** exit code != 0 are auto-inserted with `source='auto'`:
-   - `not a tty` / `is not a terminal` / `stdin is not a tty`
-   - `TERM environment variable not set`
-   - `tcgetattr`
-   - Exit-code condition guards against false positives (e.g. `echo "not a tty"`).
-   - Agent `program_record` overrides auto entries.
+Single write path: `program_record`, called by the agent after it has observed a program's behavior (e.g. pipe mode printed "not a tty" or hung → restart with `pty: true` and record; a script ran fine without a PTY → record `needs_pty=false`). The server does no pattern matching — it only stores what the agent confirms. Repeated confirmation increments `confirmed_count`.
 
 ## Error Handling & Edge Cases
 
@@ -209,8 +204,7 @@ Starts empty; no seed list.
   6. **Resize**: `setwinsize` changes dump dimensions
   7. **Errors**: `process_screen` on pipe-mode process errors
 - New `tests/test_registry.py`:
-  - CRUD, agent-overrides-auto, cross-startup persistence (run server twice, entry survives)
-  - Auto-capture: matching output + nonzero exit → inserted; `echo "not a tty"` (exit 0) → **not** inserted
+  - CRUD, upsert reinforcement (`confirmed_count` increments), cross-startup persistence (run server twice, entry survives)
 - POSIX backend tests: `pytest.mark.skipif` on Windows (code path preserved for other platforms).
 
 ## Dependencies
@@ -251,6 +245,6 @@ Portal/
 ## Out of Scope
 
 - Seed list for the registry (starts empty by design).
-- Automatic `pty: "auto"` detection mode — unreliable; agent judgment + decision rules + registry cover it.
+- Automatic `pty: "auto"` detection mode and server-side error-pattern capture — unreliable; agent judgment + decision rules + registry cover it.
 - Screen-state persistence to DB (live in-memory only, until cleanup).
 - Process-tree cleanup on Windows kill.

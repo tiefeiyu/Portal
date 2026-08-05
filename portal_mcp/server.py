@@ -59,7 +59,7 @@ def _signal_help() -> str:
             "SIGTERM is mapped to TerminateProcess. "
             "For PTY processes: SIGTERM -> terminate (hard kill on "
             "Windows), SIGKILL -> kill, CTRL_C_EVENT -> Ctrl+C; for "
-            "a graceful interrupt use process_write with \u0003 followed by a carriage return."
+            "a graceful interrupt use process_write: send \u0003 and a carriage return as two separate writes."
         )
     else:
         names = [
@@ -72,8 +72,8 @@ def _signal_help() -> str:
             " For PTY processes only SIGTERM -> terminate, SIGKILL -> "
             "kill, and CTRL_C_EVENT -> Ctrl+C are supported; other "
             "signals are rejected with an error. For a graceful "
-            "interrupt use process_write with \u0003 followed by a "
-            "carriage return."
+            "interrupt use process_write: send \u0003 and a carriage return as two separate writes"
+            "(split delivery)."
         )
 
 
@@ -267,7 +267,7 @@ def main():
                         "stream (terminal echo) — treat it as your "
                         "own input, not program output, and do not "
                         "re-send it. To interrupt a PTY process, "
-                        "send \u0003 followed by a carriage return (Ctrl+C then Enter — ConPTY is line-buffered, the CR triggers it); a KeyboardInterrupt "
+                        "send \u0003 and a carriage return as two separate writes (Ctrl+C then Enter — ConPTY is line-buffered; split delivery is measurably more reliable); a KeyboardInterrupt "
                         "traceback in output is expected, not an "
                         "error. process_signal/process_kill are "
                         "fallbacks — see their descriptions for the "
@@ -854,7 +854,7 @@ def main():
                         "4. Repeat 2–3 as the conversation with the "
                         "process continues\n"
                         "5. To interrupt a PTY process, `process_write` "
-                        "with `\u0003` then a carriage return (Ctrl+C + Enter — ConPTY is line-buffered); `process_signal` / "
+                        "with `\u0003` and a carriage return as two separate writes (Ctrl+C + Enter — ConPTY is line-buffered); `process_signal` / "
                         "`process_kill` are fallbacks (CTRL_C_EVENT is a graceful interrupt)\n"
                         "6. `process_cleanup` — remove finished process "
                         "data\n"

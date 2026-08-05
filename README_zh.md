@@ -160,7 +160,7 @@ PTY 模式与管道模式的差异：
   `source="stderr"` 恒为空）
 - 记录是任意块，不是行——一行可能跨多条记录，提示符可能没有换行
 - 写入的输入会回显到输出流（真实终端行为）——回显是输入，不是输出
-- 中断 PTY 进程：用 `process_write` 发送 `\u0003` 后再加一个回车（Ctrl+C + Enter，ConPTY 行缓冲）；
+- 中断 PTY 进程：用 `process_write` 分两次发送 `\u0003` 和回车（Ctrl+C + Enter，ConPTY 行缓冲，分开发送实测更可靠）；
   `KeyboardInterrupt` 回溯是预期输出
 - PTY 进程的 `process_signal` 仅支持 SIGTERM（终止，Windows 上为硬杀）、
   SIGKILL（杀）和 CTRL_C_EVENT（优雅 Ctrl+C）；其他信号会被拒绝

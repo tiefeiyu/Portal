@@ -217,7 +217,9 @@ class TestFakeHandlePipeline:
         assert handle.terminated is True
         handle.alive = True  # reuse for next signal
         await mp.send_signal("CTRL_C_EVENT")
-        assert handle.written == ["\x03\r"]  # CR flushes ConPTY line buffer
+        # split writes: \x03 then \r (CR flushes ConPTY's line buffer;
+        # split delivery avoids a measured ~200ms input-state race)
+        assert handle.written == ["\x03", "\r"]
         handle.alive = True
         await mp.send_signal("SIGKILL")  # must come last — kill sets status
         assert handle.killed == [_SIGKILL]
@@ -374,7 +376,11 @@ class TestRealConPTY:
         await wait_records(pty_db, pid, ">")
         # Under ConPTY a bare \x03 is line-buffered and never becomes a
         # Ctrl+C; a following CR commits the line and triggers it.
-        await mp.write_stdin(pty_db, "\x03\r")
+        # Split across two writes with a pause: a single \x03\r write
+        # races ~5/8 vs 8/8 split delivery (measured, Win11/pywinpty).
+        await mp.write_stdin(pty_db, "\x03")
+        await asyncio.sleep(0.1)
+        await mp.write_stdin(pty_db, "\r")
         try:
             await asyncio.wait_for(mp.wait_exit(), timeout=10)
         except asyncio.TimeoutError:

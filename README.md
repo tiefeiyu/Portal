@@ -175,7 +175,7 @@ PTY mode differences from pipe mode:
   records, and prompts may arrive without a trailing newline
 - input you write is echoed back into the output stream (real terminal
   behavior) — treat echoes as your own input
-- to interrupt a PTY process, write `\u0003` followed by a carriage return (Ctrl+C then Enter) via
+- to interrupt a PTY process, write `\u0003` and a carriage return as two separate writes (Ctrl+C then Enter — split delivery is measurably more reliable) via
   `process_write`; a `KeyboardInterrupt` traceback is expected output
 - `process_signal` on PTY processes supports only SIGTERM (terminate,
   a hard kill on Windows), SIGKILL (kill) and CTRL_C_EVENT (graceful

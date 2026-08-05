@@ -241,7 +241,9 @@ class PtyProcess:
         """Resolve a signal name-or-int to a PTY-appropriate action.
 
         SIGTERM -> terminate(), SIGKILL -> kill(),
-        CTRL_C_EVENT -> write '\\x03\\r' (CR flushes ConPTY's line buffer).
+        CTRL_C_EVENT -> write '\x03' and '\r' as separate writes with a
+        short pause (CR flushes ConPTY's line buffer; split delivery
+        avoids a measured ~200ms input-state race).
         """
         if self.status != "running":
             raise RuntimeError(
@@ -256,9 +258,15 @@ class PtyProcess:
                 return
             if sig == "CTRL_C_EVENT":
                 # Under ConPTY cooked mode a bare \x03 is line-buffered
-                # and never becomes Ctrl+C; the following CR commits the
-                # line and triggers the interrupt (user-confirmed form).
-                self._handle.write("\x03\r")
+                # and never becomes Ctrl+C; the CR commits the line and
+                # triggers the interrupt. Send the two characters as
+                # SEPARATE writes with a short pause: a single \x03\r
+                # write races when it lands within ~200ms of the
+                # previous line commit (measured ~5/8 vs 8/8 delivery
+                # on Win11/pywinpty).
+                self._handle.write("\x03")
+                await asyncio.sleep(0.1)
+                self._handle.write("\r")
                 return
             resolved = getattr(signal, sig, None)
             if resolved is None:

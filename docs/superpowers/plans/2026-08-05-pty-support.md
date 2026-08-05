@@ -1110,6 +1110,8 @@ class TestFakeHandlePipeline:
         await mp.start(pty_db)
         await mp.terminate()
         assert handle.terminated is True
+        # wait_exit must never hang after terminate (exit-monitor path)
+        await asyncio.wait_for(mp.wait_exit(), timeout=3)
 
     async def test_send_signal_mapping(self, pty_db):
         pid = await _make_pid(pty_db, command="fake")
@@ -1120,7 +1122,7 @@ class TestFakeHandlePipeline:
         assert handle.terminated is True
         handle.alive = True  # reuse for next signal
         await mp.send_signal("CTRL_C_EVENT")
-        assert handle.written == ["\x03"]
+        assert handle.written == ["\x03\r"]  # CR flushes ConPTY line buffer
         handle.alive = True
         await mp.send_signal("SIGKILL")  # must come last — kill sets status
         assert handle.killed == [getattr(signal, "SIGKILL", 9)]
@@ -1384,7 +1386,9 @@ class PtyProcess:
             self._handle.kill(_SIGKILL)
         except Exception:
             pass
-        self._handle.close()  # unblocks a stuck blocking read()
+        # close() is a blocking C call that can stall for seconds on
+        # some backends — offload it so the event loop never freezes.
+        await asyncio.to_thread(self._handle.close)  # unblocks a stuck read()
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=2.0)
         if self._consumer_task:
@@ -1400,9 +1404,13 @@ class PtyProcess:
             self._handle.terminate()
         except Exception:
             pass
-        self._handle.close()
+        await asyncio.to_thread(self._handle.close)
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=2.0)
+        # Same backstop as kill(): if the reader thread exited at the
+        # _stop check without pushing eof, wait_exit() would hang on
+        # _exited forever (the exit monitor awaits it).
+        self._exited.set()
 
     async def wait_exit(self) -> int | None:
         """Wait for the reader to signal EOF; may return None.

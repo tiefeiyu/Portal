@@ -209,18 +209,28 @@ class TestFakeHandlePipeline:
         await asyncio.wait_for(mp.wait_exit(), timeout=3)
 
     async def test_send_signal_mapping(self, pty_db):
+        # A handle that never EOFs keeps the process "running" across
+        # all three mappings — a plain FakeHandle flips status to
+        # "exited" as soon as its read() hits EOF, making the reuse
+        # racy (terminate()/kill() yield to the loop via to_thread).
+        class ZombieHandle(FakeHandle):
+            def read(self):
+                while True:
+                    time.sleep(0.01)
+
+            def isalive(self):
+                return True
+
         pid = await _make_pid(pty_db, command="fake")
-        handle = FakeHandle()
+        handle = ZombieHandle()
         mp = PtyProcess(pid, handle, 0)
         await mp.start(pty_db)
         await mp.send_signal("SIGTERM")
         assert handle.terminated is True
-        handle.alive = True  # reuse for next signal
         await mp.send_signal("CTRL_C_EVENT")
         # split writes: \x03 then \r (CR flushes ConPTY's line buffer;
         # split delivery avoids a measured ~200ms input-state race)
         assert handle.written == ["\x03", "\r"]
-        handle.alive = True
         await mp.send_signal("SIGKILL")  # must come last — kill sets status
         assert handle.killed == [_SIGKILL]
 

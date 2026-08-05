@@ -40,7 +40,7 @@ Portal MCP Server
   │           ├── Loop-side consumer task: queue → pyte feed + strip + DB insert
   │           ├── pyte emulator: primary + alternate screens (in-memory, live)
   │           └── DB record stream (chunk granularity, source=1)
-  ├── Database (session)    — unchanged, stays at <cwd>/.portal/portal.db
+  ├── Database (session)    — unchanged, per-instance <cwd>/.portal/portal-<pid>-<ms>.db
   ├── Registry               — new, global, platform app-data dir
   └── ansi.py               — unchanged
 ```
@@ -78,7 +78,7 @@ Interface-parity twin of `ManagedProcess` — the exact public surface `ProcessM
 
 | Member | Contract |
 |--------|----------|
-| `spawn(command, args, cwd, env, cols=80, rows=24)` | via `pty_backend`; reader thread starts here (daemon=True) |
+| `@classmethod async create(db, proc_id, command, args, cwd, env, timeout_ms=0, cols=80, rows=24)` | spawns via `pty_backend`, then starts the reader thread + consumer task (daemon thread); on start failure kills/closes the handle before re-raising |
 | `os_pid` (property) | from backend `.pid` — `manager.start` needs it for `update_os_pid` (no `asyncio.subprocess.Process` exists in PTY mode) |
 | `start_background_readers(db)` | no-op in PTY mode (reader already started at spawn) — keeps `manager.start` un-branched |
 | `write_stdin(db, content)` | encode + write to PTY input; DB record source=0; **same signature as `ManagedProcess`** (manager.write calls exactly this) |

@@ -52,8 +52,11 @@ Or with explicit Python path:
 ```
 
 The `PORTAL_DB_PATH` environment variable controls the SQLite database
-location (default: `.portal/portal.db` in the working directory). The
-database is created fresh on every server startup.
+location. By default each server instance uses its own file,
+`.portal/portal-<pid>-<timestamp>.db` in the working directory — created
+fresh on every startup, kept as timestamped history, and named
+per-instance so a lingering or concurrent server can never lock the
+file and block a new one.
 
 ## One-Click Install
 
@@ -73,6 +76,9 @@ Copy the prompt from [`llms-install.md`](llms-install.md) into your AI agent to 
 | `process_kill_all` | Kill all managed processes |
 | `process_clear` | Clear I/O records for a process |
 | `process_cleanup` | Remove a terminated process and all its data |
+| `process_screen` | Snapshot the live screen of a PTY process (for full-screen TUIs) |
+| `program_query` | Look up whether a program needs a PTY (persistent registry) |
+| `program_record` | Record a confirmed program fact in the persistent registry |
 
 ### process_start
 
@@ -83,6 +89,10 @@ Start a subprocess and begin capturing its output.
 - `cwd` (optional): Working directory
 - `env` (optional): Environment variables (merged with current env)
 - `timeout_ms` (optional): Idle timeout in milliseconds (0 = no timeout)
+- `pty` (optional, default `false`): Run on a virtual PTY instead of
+  pipes — set `true` for programs that check `isatty()` (ssh, gdb,
+  psql, REPLs) or render full-screen TUIs (vim, htop, less); when in
+  doubt, use `true` (see [Virtual PTY support](#virtual-pty-support))
 
 Returns: `id`, `os_pid`, `status`
 
@@ -167,6 +177,9 @@ PTY mode differences from pipe mode:
   behavior) — treat echoes as your own input
 - to interrupt a PTY process, write `\u0003` followed by a carriage return (Ctrl+C then Enter) via
   `process_write`; a `KeyboardInterrupt` traceback is expected output
+- `process_signal` on PTY processes supports only SIGTERM (terminate,
+  a hard kill on Windows), SIGKILL (kill) and CTRL_C_EVENT (graceful
+  Ctrl+C); other signals are rejected
 - exit code is `null` on Windows (ConPTY exposes none)
 
 `process_screen` snapshots the live screen of a PTY process — use it
@@ -210,8 +223,10 @@ READ and WRITE operations reset the idle timer, preventing timeout kills.
 ## ANSI Stripping
 
 All color codes and cursor movement sequences (`\x1b[...m`, `\x1b[...J`,
-etc.) are stripped from output before storage. Content is otherwise stored
-as-is, preserving whatever newline conventions the process uses.
+etc.) are stripped from output before storage. In pipe mode content is
+otherwise stored as-is, preserving whatever newline conventions the
+process uses; in PTY mode bare carriage returns (`\r`) are also removed
+(ConPTY emits `\r\n`).
 
 ## Architecture
 

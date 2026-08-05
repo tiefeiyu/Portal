@@ -54,7 +54,7 @@ def _signal_help() -> str:
     common = "Send a signal to a process by name or number."
     if sys.platform == "win32":
         return (
-            f"{common} Windows supports: "
+            f"{common} Windows supports (pipe mode): "
             "CTRL_C_EVENT (0), CTRL_BREAK_EVENT (1). "
             "SIGTERM is mapped to TerminateProcess. "
             "For PTY processes: SIGTERM -> terminate (hard kill on "
@@ -69,6 +69,11 @@ def _signal_help() -> str:
         ]
         return (
             f"{common} Available signals: {', '.join(sorted(names))}."
+            " For PTY processes only SIGTERM -> terminate, SIGKILL -> "
+            "kill, and CTRL_C_EVENT -> Ctrl+C are supported; other "
+            "signals are rejected with an error. For a graceful "
+            "interrupt use process_write with \u0003 followed by a "
+            "carriage return."
         )
 
 
@@ -79,9 +84,9 @@ async def create_server(
 
     Args:
         db_path: Path to SQLite database. Defaults to a per-instance
-            '.portal/portal-<pid>.db' in the current directory (fresh
-            per startup; pid-scoped so concurrent instances never
-            collide on the file lock).
+            '.portal/portal-<pid>-<ms>.db' in the current directory
+            (fresh per startup; per-instance so concurrent or zombie
+            instances never collide on the file lock).
 
     Returns:
         Tuple of (ProcessManager, Database) for testing.
@@ -265,7 +270,9 @@ def main():
                         "send \u0003 followed by a carriage return (Ctrl+C then Enter — ConPTY is line-buffered, the CR triggers it); a KeyboardInterrupt "
                         "traceback in output is expected, not an "
                         "error. process_signal/process_kill are "
-                        "hard-stop fallbacks."
+                        "fallbacks — see their descriptions for the "
+                        "PTY signal mapping (CTRL_C_EVENT is a "
+                        "graceful interrupt, not a hard stop)."
                     ),
                     inputSchema={
                         "type": "object",
@@ -298,7 +305,11 @@ def main():
                                 "type": "string",
                                 "description": (
                                     "OS signal name (e.g., SIGTERM, "
-                                    "SIGKILL, SIGINT) or signal number."
+                                    "SIGKILL, SIGINT) or signal number. "
+                                    "PTY processes support SIGTERM, "
+                                    "SIGKILL and CTRL_C_EVENT only; "
+                                    "signal numbers in the help text "
+                                    "refer to pipe mode."
                                 ),
                             },
                         },
@@ -844,7 +855,7 @@ def main():
                         "process continues\n"
                         "5. To interrupt a PTY process, `process_write` "
                         "with `\u0003` then a carriage return (Ctrl+C + Enter — ConPTY is line-buffered); `process_signal` / "
-                        "`process_kill` are hard-stop fallbacks\n"
+                        "`process_kill` are fallbacks (CTRL_C_EVENT is a graceful interrupt)\n"
                         "6. `process_cleanup` — remove finished process "
                         "data\n"
                         "\n"

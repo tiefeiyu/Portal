@@ -47,7 +47,7 @@ pip uninstall portal-mcp
 }
 ```
 
-环境变量 `PORTAL_DB_PATH` 可指定 SQLite 数据库路径（默认：当前目录下 `.portal/portal.db`）。每次 MCP 服务启动时数据库会重新创建。
+环境变量 `PORTAL_DB_PATH` 可指定 SQLite 数据库路径。默认情况下每个服务实例使用自己的文件：当前目录下 `.portal/portal-<pid>-<时间戳>.db` —— 每次启动全新创建、以带时间戳的历史文件保留，且按实例命名，残留或并发的服务器实例不会锁住文件阻塞新实例启动。
 
 ## 一键安装
 
@@ -67,6 +67,9 @@ pip uninstall portal-mcp
 | `process_kill_all` | 杀死所有托管进程 |
 | `process_clear` | 清空某个进程的 I/O 记录 |
 | `process_cleanup` | 移除已终止进程及其全部数据 |
+| `process_screen` | 快照 PTY 进程的实时屏幕（用于全屏 TUI） |
+| `program_query` | 查询程序是否需要 PTY（持久化注册表） |
+| `program_record` | 记录已确认的程序事实到持久化注册表 |
 
 ### process_start
 
@@ -77,6 +80,10 @@ pip uninstall portal-mcp
 - `cwd`（可选）：工作目录
 - `env`（可选）：环境变量（与当前环境合并）
 - `timeout_ms`（可选）：空闲超时时间（毫秒），0 表示永不超时
+- `pty`（可选，默认 `false`）：使用虚拟 PTY 运行而非管道 ——
+  检查 `isatty()` 的程序（ssh、gdb、psql、REPL）或全屏 TUI
+  （vim、htop、less）设为 `true`；拿不准时用 `true`
+  （见[虚拟 PTY 支持](#虚拟-pty-支持)）
 
 返回：`id`、`os_pid`、`status`
 
@@ -155,6 +162,8 @@ PTY 模式与管道模式的差异：
 - 写入的输入会回显到输出流（真实终端行为）——回显是输入，不是输出
 - 中断 PTY 进程：用 `process_write` 发送 `\u0003` 后再加一个回车（Ctrl+C + Enter，ConPTY 行缓冲）；
   `KeyboardInterrupt` 回溯是预期输出
+- PTY 进程的 `process_signal` 仅支持 SIGTERM（终止，Windows 上为硬杀）、
+  SIGKILL（杀）和 CTRL_C_EVENT（优雅 Ctrl+C）；其他信号会被拒绝
 - Windows 上退出码为 `null`（ConPTY 不提供）
 
 `process_screen` 对 PTY 进程做实时屏幕快照——全屏 TUI 的记录流是
@@ -193,7 +202,7 @@ READ 和 WRITE 操作会重置空闲计时器，防止超时被杀死。
 
 ## ANSI 过滤
 
-所有颜色码和光标移动序列（`\x1b[...m`、`\x1b[...J` 等）在存储前被过滤移除。内容原样存储，保留进程原有的换行格式。
+所有颜色码和光标移动序列（`\x1b[...m`、`\x1b[...J` 等）在存储前被过滤移除。管道模式下内容原样存储，保留进程原有的换行格式；PTY 模式下额外的裸回车符（`\r`）也会被移除（ConPTY 输出 `\r\n`）。
 
 ## 架构
 

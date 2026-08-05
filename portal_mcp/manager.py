@@ -6,6 +6,7 @@ import time
 
 from portal_mcp.database import Database
 from portal_mcp.process import ManagedProcess
+from portal_mcp.registry import Registry
 
 
 def _parse_duration(duration: int, unit: str) -> int:
@@ -46,8 +47,9 @@ class ProcessManager:
     Runs a background timeout monitor that kills idle processes.
     """
 
-    def __init__(self, db: Database):
+    def __init__(self, db: Database, registry: Registry | None = None):
         self._db = db
+        self._registry = registry
         self._processes: dict[int, ManagedProcess] = {}
         self._monitor_task: asyncio.Task | None = None
 
@@ -310,6 +312,20 @@ class ProcessManager:
                 count += 1
         return {"killed": count}
 
+    async def query_program(self, program: str) -> dict:
+        """Look up a program in the registry (miss is a normal result)."""
+        if self._registry is None:
+            raise ValueError("Program registry not configured")
+        return await self._registry.query(program)
+
+    async def record_program(
+        self, program: str, needs_pty: bool, notes: str | None = None
+    ) -> dict:
+        """Record a confirmed program fact in the registry."""
+        if self._registry is None:
+            raise ValueError("Program registry not configured")
+        return await self._registry.record(program, needs_pty, notes)
+
     async def clear(self, proc_id: int) -> dict:
         """Clear I/O records for a process."""
         proc = await self._db.get_process(proc_id)
@@ -349,3 +365,5 @@ class ProcessManager:
                 except Exception:
                     pass
         self._processes.clear()
+        if self._registry is not None:
+            await self._registry.close()

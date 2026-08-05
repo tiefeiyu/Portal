@@ -113,3 +113,9 @@ class TestServerTools:
         contents = "".join(r["content"] for r in records)
         assert "red text" in contents
         assert "\x1b" not in contents
+
+    async def test_registry_wired_through_create_server(self, portal):
+        result = await portal.record_program("gdb", True)
+        assert result["known"] is True
+        assert result["needs_pty"] is True
+        assert (await portal.query_program("GDB.EXE"))["needs_pty"] is True

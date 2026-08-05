@@ -7,6 +7,7 @@ import tempfile
 import pytest
 from portal_mcp.database import Database
 from portal_mcp.manager import ProcessManager
+from portal_mcp.registry import Registry
 
 
 @pytest.fixture
@@ -291,3 +292,21 @@ class TestTimeoutMonitor:
             await manager.read(result["id"], "both", 1000, "ms")
         info = await manager.inspect(result["id"])
         assert info["status"] == "running"
+
+
+class TestRegistryWiring:
+    async def test_query_roundtrip(self, tmp_path, manager):
+        registry = Registry(str(tmp_path / "programs.db"))
+        await registry.open()
+        mgr = ProcessManager(manager._db, registry=registry)
+        result = await mgr.query_program("ssh")
+        assert result == {"program": "ssh", "known": False}
+        await mgr.record_program("ssh", True, notes="interactive")
+        assert (await mgr.query_program("ssh"))["needs_pty"] is True
+        await registry.close()
+
+    async def test_without_registry_raises(self, manager):
+        with pytest.raises(ValueError, match="registry"):
+            await manager.query_program("ssh")
+        with pytest.raises(ValueError, match="registry"):
+            await manager.record_program("ssh", True)

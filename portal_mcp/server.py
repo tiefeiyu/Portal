@@ -11,6 +11,8 @@ import mcp.server.stdio
 import mcp.types as types
 from portal_mcp.database import Database
 from portal_mcp.manager import ProcessManager
+from portal_mcp.paths import registry_db_path
+from portal_mcp.registry import Registry
 
 
 SERVER_NAME = "portal"
@@ -68,7 +70,10 @@ async def create_server(
     db = Database(db_path)
     await db.initialize()
 
-    manager = ProcessManager(db)
+    registry = Registry(str(registry_db_path()))
+    await registry.open()
+
+    manager = ProcessManager(db, registry=registry)
     await manager.start_monitor()
 
     return manager, db
@@ -318,6 +323,66 @@ def main():
                         "required": ["id"],
                     },
                 ),
+                types.Tool(
+                    name="program_query",
+                    description=(
+                        "Look up whether a program needs a PTY in the "
+                        "persistent program registry. Call BEFORE "
+                        "process_start. A miss is a normal result, not "
+                        "an error — it means apply the decision rules "
+                        "in the instructions. confirmed_count >= 2 "
+                        "means settled; a single confirmation is a "
+                        "hint — re-verify on first use."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "program": {
+                                "type": "string",
+                                "description": (
+                                    "Executable name, e.g. 'ssh'."
+                                ),
+                            },
+                        },
+                        "required": ["program"],
+                    },
+                ),
+                types.Tool(
+                    name="program_record",
+                    description=(
+                        "Record a confirmed program fact in the "
+                        "persistent registry after observing its "
+                        "behavior: needs_pty true if it required a "
+                        "terminal (TTY error, hang in pipe mode, or "
+                        "TUI rendering with pty:true), false if it ran "
+                        "fine without one. Record every first-encounter "
+                        "conclusion, including negatives. notes should "
+                        "carry flag-specific caveats (e.g. 'docker run "
+                        "-it only, not docker build')."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "program": {
+                                "type": "string",
+                                "description": "Executable name.",
+                            },
+                            "needs_pty": {
+                                "type": "boolean",
+                                "description": (
+                                    "Whether the program needs a PTY."
+                                ),
+                            },
+                            "notes": {
+                                "type": "string",
+                                "description": (
+                                    "Optional caveats or context."
+                                ),
+                            },
+                        },
+                        "required": ["program", "needs_pty"],
+                    },
+                ),
             ]
 
         @server.call_tool()
@@ -504,6 +569,47 @@ def main():
                         types.TextContent(
                             type="text",
                             text=f"Process {result['id']} cleaned up.",
+                        )
+                    ]
+
+                elif name == "program_query":
+                    result = await manager.query_program(
+                        arguments["program"]
+                    )
+                    return [
+                        types.TextContent(
+                            type="text",
+                            text=(
+                                f"{result['program']}: "
+                                + (
+                                    f"needs_pty={result['needs_pty']}, "
+                                    f"confirmed x{result['confirmed_count']}"
+                                    + (
+                                        f" — {result['notes']}"
+                                        if result.get("notes")
+                                        else ""
+                                    )
+                                    if result.get("known")
+                                    else "not in registry — apply decision rules"
+                                )
+                            ),
+                        )
+                    ]
+
+                elif name == "program_record":
+                    result = await manager.record_program(
+                        program=arguments["program"],
+                        needs_pty=arguments["needs_pty"],
+                        notes=arguments.get("notes"),
+                    )
+                    return [
+                        types.TextContent(
+                            type="text",
+                            text=(
+                                f"Recorded {result['program']}: "
+                                f"needs_pty={result['needs_pty']} "
+                                f"(confirmed x{result['confirmed_count']})."
+                            ),
                         )
                     ]
 

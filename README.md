@@ -150,6 +150,53 @@ or `killed` processes.
 
 - `id` (required): Internal process ID
 
+## Virtual PTY support
+
+By default Portal runs programs on OS pipes. Programs that check
+`isatty()` (ssh, gdb, psql, interactive REPLs) or render full-screen
+TUIs (vim, htop, less) need a virtual PTY instead: pass `"pty": true`
+to `process_start`. On Windows this uses ConPTY (Windows 10 1809+);
+on POSIX it uses ptyprocess.
+
+PTY mode differences from pipe mode:
+- stdout and stderr are merged into one console stream (`process_read`
+  with `source="stderr"` returns empty)
+- records are arbitrary chunks, not lines — a line may span multiple
+  records, and prompts may arrive without a trailing newline
+- input you write is echoed back into the output stream (real terminal
+  behavior) — treat echoes as your own input
+- to interrupt a PTY process, write `\u0003` followed by a carriage return (Ctrl+C then Enter) via
+  `process_write`; a `KeyboardInterrupt` traceback is expected output
+- exit code is `null` on Windows (ConPTY exposes none)
+
+`process_screen` snapshots the live screen of a PTY process — use it
+for full-screen TUIs, whose record streams are garbled fragments.
+Passing `cols`/`rows` resizes the live PTY first; omitting them is a
+pure snapshot. The screen stays queryable after exit until
+`process_cleanup`.
+
+### Choosing `pty`
+
+| Signal | Examples | Decision |
+|--------|----------|----------|
+| Checks `isatty()` | ssh, gdb, psql, mysql, telnet, REPLs | `pty: true` |
+| Full-screen TUI | vim, htop, top, less, man | `pty: true` |
+| Interactive flags | `-i` / `-it` / `-t` | `pty: true` |
+| One-shot / batch | `python -c`, build commands | `pty: false` |
+| Paged one-shots | git log/diff, less | pipe mode + `--no-pager`/`GIT_PAGER=cat` |
+
+When in doubt, use `pty: true` — a non-interactive program tolerates
+a PTY; an interactive one without one hangs.
+
+### Program registry
+
+`program_query` / `program_record` maintain a persistent, machine-global
+registry (`programs.db` in the platform app-data dir, or
+`PORTAL_DATA_DIR` if set) of which executables need a PTY. Agents
+record conclusions after first encounters — including negatives.
+Repeated confirmation increments `confirmed_count` (>= 2 means
+settled); recording the opposite value resets it (a correction).
+
 ## Process Lifecycle
 
 ```

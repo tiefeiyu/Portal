@@ -10,7 +10,7 @@ Copy the prompt below and paste it into your AI agent to install Portal MCP Serv
 >    ```bash
 >    pip install -e .
 >    ```
->    Requires Python 3.11+. Dependencies: `mcp`, `aiosqlite`.
+>    Requires Python 3.11+. Dependencies: `mcp`, `aiosqlite`, `pyte`, plus `pywinpty` (Windows) / `ptyprocess` (POSIX).
 >
 > 2. Add Portal to the MCP configuration for this platform:
 >

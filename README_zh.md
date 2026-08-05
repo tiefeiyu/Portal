@@ -141,6 +141,46 @@ pip uninstall portal-mcp
 
 - `id`（必填）：内部进程 ID
 
+## 虚拟 PTY 支持
+
+默认情况下 Portal 使用系统管道运行程序。检查 `isatty()` 的程序（ssh、
+gdb、psql、交互式 REPL）和全屏 TUI（vim、htop、less）需要虚拟 PTY：
+给 `process_start` 传 `"pty": true` 即可。Windows 上基于 ConPTY
+（Windows 10 1809+），POSIX 上基于 ptyprocess。
+
+PTY 模式与管道模式的差异：
+- stdout 与 stderr 合并为单一控制台流（`process_read` 的
+  `source="stderr"` 恒为空）
+- 记录是任意块，不是行——一行可能跨多条记录，提示符可能没有换行
+- 写入的输入会回显到输出流（真实终端行为）——回显是输入，不是输出
+- 中断 PTY 进程：用 `process_write` 发送 `\u0003` 后再加一个回车（Ctrl+C + Enter，ConPTY 行缓冲）；
+  `KeyboardInterrupt` 回溯是预期输出
+- Windows 上退出码为 `null`（ConPTY 不提供）
+
+`process_screen` 对 PTY 进程做实时屏幕快照——全屏 TUI 的记录流是
+乱码片段，请用此工具读取。传 `cols`/`rows` 会先调整实时终端尺寸，
+省略则为纯快照。进程退出后屏幕仍可查询，直到 `process_cleanup`。
+
+### 何时使用 `pty`
+
+| 信号 | 例子 | 判定 |
+|------|------|------|
+| 检查 `isatty()` | ssh、gdb、psql、mysql、telnet、REPL | `pty: true` |
+| 全屏 TUI | vim、htop、top、less、man | `pty: true` |
+| 交互式 flags | `-i` / `-it` / `-t` | `pty: true` |
+| 一次性脚本/批处理 | `python -c`、构建命令 | `pty: false` |
+| 分页输出的一次性命令 | git log/diff、less | 管道模式 + `--no-pager`/`GIT_PAGER=cat` |
+
+拿不准时用 `pty: true`——非交互程序容忍 PTY，交互程序没有 PTY 会挂起。
+
+### 程序注册表
+
+`program_query` / `program_record` 维护一个跨会话、机器全局的注册表
+（`programs.db`，位于平台应用数据目录，可用 `PORTAL_DATA_DIR` 覆盖），
+记录哪些可执行文件需要 PTY。Agent 在首次遇到程序后回写结论（包括
+"不需要"的负例）。重复确认递增 `confirmed_count`（>= 2 视为已定案）；
+记录相反值会重置计数（视为修正）。
+
 ## 进程生命周期
 
 ```

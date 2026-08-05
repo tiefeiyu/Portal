@@ -52,8 +52,8 @@ Or with explicit Python path:
 ```
 
 The `PORTAL_DB_PATH` environment variable controls the SQLite database
-location (default: `portal.db` in the working directory). The database is
-created fresh on every server startup.
+location (default: `.portal/portal.db` in the working directory). The
+database is created fresh on every server startup.
 
 ## One-Click Install
 

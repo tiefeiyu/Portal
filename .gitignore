@@ -5,5 +5,5 @@ dist/
 build/
 .venv/
 venv/
-portal.db
+.portal/
 .pytest_cache/

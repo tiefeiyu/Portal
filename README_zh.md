@@ -47,7 +47,7 @@ pip uninstall portal-mcp
 }
 ```
 
-环境变量 `PORTAL_DB_PATH` 可指定 SQLite 数据库路径（默认：当前目录下的 `portal.db`）。每次 MCP 服务启动时数据库会重新创建。
+环境变量 `PORTAL_DB_PATH` 可指定 SQLite 数据库路径（默认：当前目录下 `.portal/portal.db`）。每次 MCP 服务启动时数据库会重新创建。
 
 ## 一键安装
 

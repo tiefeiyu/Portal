@@ -16,6 +16,8 @@ from portal_mcp.manager import ProcessManager
 SERVER_NAME = "portal"
 SERVER_VERSION = "0.1.0"
 
+DEFAULT_DB_PATH = os.path.join(".portal", "portal.db")
+
 
 def _signal_help() -> str:
     """Platform-specific signal help text."""
@@ -45,14 +47,19 @@ async def create_server(
     """Create and configure the Portal MCP server.
 
     Args:
-        db_path: Path to SQLite database. Defaults to 'portal.db'
+        db_path: Path to SQLite database. Defaults to '.portal/portal.db'
             in the current directory.
 
     Returns:
         Tuple of (ProcessManager, Database) for testing.
     """
     if db_path is None:
-        db_path = "portal.db"
+        db_path = DEFAULT_DB_PATH
+
+    # Create the database directory if it doesn't exist
+    db_dir = os.path.dirname(db_path)
+    if db_dir:
+        os.makedirs(db_dir, exist_ok=True)
 
     # Delete old database for fresh start
     if os.path.exists(db_path):
@@ -72,7 +79,7 @@ def main():
     import asyncio
 
     async def run():
-        db_path = os.environ.get("PORTAL_DB_PATH", "portal.db")
+        db_path = os.environ.get("PORTAL_DB_PATH", DEFAULT_DB_PATH)
         manager, db = await create_server(db_path)
         server = Server(SERVER_NAME, version=SERVER_VERSION)
 

@@ -84,7 +84,27 @@ class PtyProcess:
             command, args, cwd, env, rows=rows, cols=cols
         )
         mp = cls(proc_id, handle, timeout_ms, cols, rows)
-        await mp.start(db)
+        try:
+            await mp.start(db)
+        except Exception:
+            # No half-started state: a failure inside start() (e.g. the
+            # lazy pyte import in _make_screen) must not leak the
+            # spawned child and its ConPTY handle. Best-effort teardown
+            # — swallow secondary failures and re-raise the original.
+            mp._stop.set()
+            try:
+                mp._handle.kill(_SIGKILL)
+            except Exception:
+                pass
+            try:
+                await asyncio.to_thread(mp._handle.close)
+            except Exception:
+                pass
+            if mp._thread and mp._thread.is_alive():
+                mp._thread.join(timeout=2.0)
+            if mp._consumer_task:
+                mp._consumer_task.cancel()
+            raise
         return mp
 
     @property
@@ -158,22 +178,30 @@ class PtyProcess:
         try:
             while True:
                 kind, data = await self._queue.get()
-                if kind == "eof":
+                try:
+                    if kind == "eof":
+                        self._status = "exited"
+                        self._exited.set()
+                        return
+                    self._feed_screen(data)
+                    cleaned = strip_ansi(data).replace("\r", "")
+                    if cleaned:
+                        try:
+                            await db.insert_record(
+                                self._id, time.time_ns(), 1, cleaned
+                            )
+                        except Exception:
+                            # DB closed during shutdown — drop the remaining
+                            # records but keep draining so eof still sets
+                            # _exited (wait_exit contract preserved).
+                            pass
+                except Exception:
+                    # A consumer-side failure (feed/strip) must not strand
+                    # the process in "running": mark exited and release
+                    # wait_exit() so the exit monitor never hangs.
                     self._status = "exited"
                     self._exited.set()
                     return
-                self._feed_screen(data)
-                cleaned = strip_ansi(data).replace("\r", "")
-                if cleaned:
-                    try:
-                        await db.insert_record(
-                            self._id, time.time_ns(), 1, cleaned
-                        )
-                    except Exception:
-                        # DB closed during shutdown — drop the remaining
-                        # records but keep draining so eof still sets
-                        # _exited (wait_exit contract preserved).
-                        pass
         except asyncio.CancelledError:
             pass
 
@@ -237,7 +265,7 @@ class PtyProcess:
                 raise ValueError(f"Unknown signal: {sig}")
         if sig == signal.SIGTERM:
             await self.terminate()
-        elif sig == signal.SIGKILL:
+        elif sig == _SIGKILL:  # Windows Python has no signal.SIGKILL
             await self.kill()
         else:
             raise ValueError(

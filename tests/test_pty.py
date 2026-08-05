@@ -8,14 +8,9 @@ import tempfile
 
 import pytest
 
-# Windows Python has no SIGKILL constant; os.kill(pid, 9) maps to
-# TerminateProcess there, matching POSIX SIGKILL semantics.
-if not hasattr(signal, "SIGKILL"):
-    signal.SIGKILL = 9
-
 from portal_mcp.database import Database
 from portal_mcp.pty_backend import _decode, normalize_env
-from portal_mcp.pty_process import PtyProcess
+from portal_mcp.pty_process import PtyProcess, _SIGKILL
 
 
 class TestNormalizeEnv:
@@ -199,7 +194,7 @@ class TestFakeHandlePipeline:
         mp = PtyProcess(pid, handle, 0)
         await mp.start(pty_db)
         await mp.kill()
-        assert handle.killed == [signal.SIGKILL]
+        assert handle.killed == [_SIGKILL]
         assert handle.closed is True
         assert mp.status == "killed"
 
@@ -225,7 +220,68 @@ class TestFakeHandlePipeline:
         assert handle.written == ["\x03\r"]  # CR flushes ConPTY line buffer
         handle.alive = True
         await mp.send_signal("SIGKILL")  # must come last — kill sets status
-        assert handle.killed == [signal.SIGKILL]
+        assert handle.killed == [_SIGKILL]
+
+    async def test_send_signal_unsupported_int_raises_value_error(self, pty_db):
+        """Numeric signals other than SIGTERM/SIGKILL raise ValueError.
+
+        Regression: Windows Python defines no signal.SIGKILL constant.
+        The int path used to compare against signal.SIGKILL directly,
+        exploding with AttributeError (surfaced by the server as
+        "Unexpected error") instead of the documented ValueError. SIGINT
+        (2) works on both platforms via getattr.
+        """
+        pid = await _make_pid(pty_db, command="fake")
+        handle = FakeHandle()
+        mp = PtyProcess(pid, handle, 0)
+        await mp.start(pty_db)
+        with pytest.raises(ValueError, match="Unsupported signal"):
+            await mp.send_signal(getattr(signal, "SIGINT", 2))
+        assert handle.terminated is False
+        assert handle.killed == []
+
+    async def test_send_signal_int_sigkill_kills(self, pty_db):
+        """The int SIGKILL path routes to kill(), not AttributeError."""
+        pid = await _make_pid(pty_db, command="fake")
+        handle = FakeHandle()
+        mp = PtyProcess(pid, handle, 0)
+        await mp.start(pty_db)
+        await mp.send_signal(_SIGKILL)
+        assert handle.killed == [_SIGKILL]
+        assert mp.status == "killed"
+
+    async def test_create_failure_tears_down_handle(self, pty_db, monkeypatch):
+        """start() failing after spawn must not leak the child/handle."""
+        from portal_mcp import pty_process
+
+        handle = FakeHandle()
+        monkeypatch.setattr(
+            pty_process.pty_backend, "spawn",
+            lambda command, args, cwd, env, **kwargs: handle,
+        )
+
+        async def fail_start(self, db):
+            raise ImportError("pyte unavailable")
+
+        monkeypatch.setattr(PtyProcess, "start", fail_start)
+        pid = await _make_pid(pty_db, command="fake")
+        with pytest.raises(ImportError):
+            await PtyProcess.create(pty_db, pid, "fake", [], None, None)
+        assert handle.killed == [_SIGKILL]
+        assert handle.closed is True
+
+    async def test_consumer_failure_marks_exited(self, pty_db, monkeypatch):
+        """A feed/strip failure must exit the process, not strand it."""
+        pid = await _make_pid(pty_db, command="fake")
+        mp = PtyProcess(pid, FakeHandle(chunks=("boom\n",)), 0)
+
+        def boom(chunk):
+            raise RuntimeError("feed failed")
+
+        monkeypatch.setattr(mp, "_feed_screen", boom)
+        await mp.start(pty_db)
+        await wait_status(mp, "exited")
+        await asyncio.wait_for(mp.wait_exit(), timeout=3)
 
 
 class TestRealConPTY:

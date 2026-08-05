@@ -351,8 +351,8 @@ class Registry:
         """
         canonical = canonicalize_program(program)
         cursor = await self._conn.execute(
-            "SELECT program, needs_pty, notes, confirmed_count "
-            "FROM programs WHERE program = ?",
+            "SELECT program, needs_pty, notes, confirmed_count, "
+            "last_confirmed_at FROM programs WHERE program = ?",
             (canonical,),
         )
         row = await cursor.fetchone()
@@ -414,7 +414,7 @@ class Registry:
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `pytest tests/test_registry.py -v`
-Expected: PASS (11 tests)
+Expected: PASS (10 tests)
 
 - [ ] **Step 6: Commit**
 

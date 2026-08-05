@@ -120,7 +120,7 @@ pyte 0.8.x records DECSET 1047/1048/1049 as inert flags — there is no buffer s
 2. **Chunk granularity** — each consumer-task batch is one DB record. Records are NOT line-aligned: a line may span records and a record may hold several lines; prompts may arrive without a trailing newline. `process_read` API unchanged (already time-window based). Documented in `process_read` description.
 3. **Echo** — input written to the PTY appears in the output stream (cooked/line mode; keep the child in cooked mode — never set raw mode). Documented in `process_write` description.
 4. **Line endings** — ConPTY emits `\r\n`; records strip bare `\r` (not just `\r\n`, so progress spinners writing lone `\r` don't leave stray CRs). pyte parses `\r\n` itself.
-5. **Control characters** — Ctrl+C = `\u0003`, Ctrl+D = `\u0004` written via `process_write` (JSON strings support them). This is the reliable way to send Ctrl+C under ConPTY — pywinpty's own `sendintr()` does exactly `write('\x03')`, and `GenerateConsoleCtrlEvent` cannot target a ConPTY child (it does not share the caller's console).
+5. **Control characters** — Ctrl+C = `\u0003` followed by a carriage return `\r`, Ctrl+D = `\u0004`, written via `process_write` (JSON strings support them). Under ConPTY cooked mode a bare `\u0003` is line-buffered and may never become Ctrl+C — the trailing `\r` commits the line and triggers the interrupt (validated on Windows; `GenerateConsoleCtrlEvent` cannot target a ConPTY child).
 6. **TUI record streams are garbled fragments** — cursor jumps stripped of ANSI. Documented in `process_screen` description: TUIs read via `process_screen`, normal interactive programs via `process_read`.
 7. **No exit code** — see PtyProcess section. `process_inspect` shows `exit_code: null` for PTY processes on Windows.
 
@@ -176,13 +176,13 @@ The new registry tools keep the `program_*` prefix (not `process_program_*`): th
 
 | Operation | Windows (ConPTY) | POSIX (ptyprocess) |
 |-----------|------------------|--------------------|
-| Ctrl+C | `process_write` with `\u0003` (write, wait, then terminate if still alive) | same (standard) |
+| Ctrl+C | `process_write` with `\u0003` followed by `\r` (the CR flushes ConPTY's line buffer; write, wait, then terminate if still alive) | same (standard) |
 | SIGTERM / terminate | `terminate()` — **immediate hard kill** (TerminateProcess, exit code 2). pywinpty's `terminate()` calls `kill(SIGINT)`, and Windows `os.kill` maps SIGINT to TerminateProcess; **no graceful step exists** | SIGTERM |
 | SIGKILL / kill | `kill(SIGKILL)` → TerminateProcess (exit code 9) | SIGKILL |
 | Exit detection | `EOFError` **or** `not isalive()` → status exited; `exit_code` = None | `EOFError` → exited, real exit code |
 
 - `PtyProcess.send_signal(sig)` resolves names itself: SIGTERM→`terminate()`, SIGKILL→`kill()`, CTRL_C_EVENT→write `\u0003` (matches pipe-mode's documented CTRL_C_EVENT support without relying on the signal API). `manager.send_signal` passes the raw name through for PTY processes.
-- `process_signal` tool description documents **both** mappings (pipe vs PTY) — the description is static per platform, so it lists both: "For PTY processes: SIGTERM → terminate (hard kill on Windows), SIGKILL → kill, CTRL_C_EVENT → Ctrl+C; for a graceful interrupt use `process_write` with `\u0003`."
+- `process_signal` tool description documents **both** mappings (pipe vs PTY) — the description is static per platform, so it lists both: "For PTY processes: SIGTERM → terminate (hard kill on Windows), SIGKILL → kill, CTRL_C_EVENT → Ctrl+C; for a graceful interrupt use `process_write` with `\u0003` followed by `\r`."
 - Timeout monitor logic unchanged: timeout → `PtyProcess.kill()` → cleanup via the existing shared code path.
 - Known limitations (documented): on Windows there is no graceful terminate — the only graceful interrupt is `\u0003`; `process_kill` force-kills the main process and ConPTY-spawned children may linger (same stance as pipe mode, no process-tree cleanup promise); exit code unavailable for PTY processes on Windows.
 
@@ -254,13 +254,13 @@ Every behavioral fact maps to exactly one agent-facing surface, with drafted wor
 | `pty` param semantics + decision triggers | `process_start` description | Quoted in process_start section above |
 | PTY records are chunks, not lines; stderr merged | `process_read` description | "For PTY processes stderr is merged into stdout (source=stderr reads return empty) and records are arbitrary chunks, not lines — a line may span multiple records. Prompts may arrive without a trailing newline. Read with a generous `duration` — the default window is only 1s." |
 | TUI records are garbled; use `process_screen` | `process_screen` description | "For full-screen TUIs (vim, htop, less): the record stream is garbled fragments — use this tool instead of `process_read`. Screen remains queryable after exit until `process_cleanup`. Snapshot is pure; `cols`/`rows` resize the live PTY." |
-| Echo; `\u0003` interrupt | `process_write` description | "Input you write reappears in the output stream (terminal echo) — treat it as your own input, not program output, and do not re-send it. To interrupt a PTY process, send `\u0003` (Ctrl+C); a `KeyboardInterrupt` traceback in output is expected, not an error. `process_signal`/`process_kill` are hard-stop fallbacks." |
+| Echo; `\u0003` interrupt | `process_write` description | "Input you write reappears in the output stream (terminal echo) — treat it as your own input, not program output, and do not re-send it. To interrupt a PTY process, send `\u0003` followed by `\r` (Ctrl+C then Enter — ConPTY is line-buffered, the CR triggers it); a `KeyboardInterrupt` traceback in output is expected, not an error. `process_signal`/`process_kill` are hard-stop fallbacks." |
 | PTY inspect counts | `process_inspect` description | "For PTY processes: `stderr_count` is always 0 (merged stream) and I/O counts are chunk-based, not line-based." |
 | `-i`/`-it`/`-t` vs `pty` distinction | MCP instructions text | "`-i`/`-it`/`-t` flags belong in the command's `args` — they configure the *program's* terminal. The `pty` param grants the *local* terminal. Tools like docker need both." |
 | Registry value loop | MCP instructions text | "Record every conclusion after a first encounter — including negative ones (`needs_pty=false` when the program ran fine without a PTY)." |
 | Full semantics reference | README (EN + zh) | Sections for pty param, process_screen, registry, decision rules |
 
-The existing MCP instructions text additionally needs two edits (they become wrong under this spec): (a) the workflow step "`process_signal` or `process_kill` — stop the process" gains an interrupt step first: "To interrupt a PTY process, `process_write` `\u0003`; `process_signal`/`process_kill` are fallbacks." (b) the bullet "Use interactive flags: `-i`, `--interactive`, `-t`, `--tty`" is clarified per the table row above.
+The existing MCP instructions text additionally needs two edits (they become wrong under this spec): (a) the workflow step "`process_signal` or `process_kill` — stop the process" gains an interrupt step first: "To interrupt a PTY process, `process_write` `\u0003` followed by `\r`; `process_signal`/`process_kill` are fallbacks." (b) the bullet "Use interactive flags: `-i`, `--interactive`, `-t`, `--tty`" is clarified per the table row above.
 
 ## Error Handling & Edge Cases
 
@@ -294,7 +294,7 @@ The existing MCP instructions text additionally needs two edits (they become wro
 2. **Prompt without newline**: `python -c "input('Password: ')"` → wait for `"Password:"` (joined records) → write the secret → read back (echo appears via cooked-mode; assert substrings on **joined** records only, never per-record content — ConPTY splits chunks arbitrarily).
 3. **Screen snapshot**: script draws a 2×2 grid with ANSI using `sys.stdout.write` + explicit `flush()` (line-buffered stdout on a tty would flush *and* scroll), **no trailing newline**, `time.sleep(30)`; assert positionally on `screen.display` lines (`lines[r][c] == "X"`, not full-line equality — pyte pads with trailing spaces); spawn with the same dims passed to `process_screen` (a resize triggers a full repaint stream that can scroll the emulated screen mid-feed).
 4. **Alt-screen**: script emits `\x1b[?1049h`, draws a marker, sleeps; assert `buffer == "alternate"` and the marker is visible; then `\x1b[?1049l` → `buffer == "primary"` with the pre-TUI content intact.
-5. **Ctrl+C**: script `input()` hung → `wait_for_output(..., ">")` until the prompt is visible **before** writing `\u0003`; then within a `wait_for` deadline assert `status == "exited"` **or** `"KeyboardInterrupt" in joined records`; accept exit code in `(1, 0, -1)`; on failure: kill + dump captured records.
+5. **Ctrl+C**: script `input()` hung → `wait_for_output(..., ">")` until the prompt is visible **before** writing `\u0003` followed by `\r`; then within a `wait_for` deadline assert `status == "exited"` **or** `"KeyboardInterrupt" in joined records`; accept exit code in `(1, 0, -1)`; on failure: kill + dump captured records.
 6. **Echo / line endings**: written content appears in output; `"\r" not in "".join(records)` (assert on joined content; implementation strips bare `\r`).
 7. **Resize (asymmetric, catches arg-order bugs)**: spawn 100 cols × 30 rows, assert BOTH `cols` and `rows` in `process_screen` output (a (rows,cols)/(cols,rows) swap fails loudly); then `setwinsize` to e.g. 120×40 and assert the emulator resized in lockstep. Spawn-time geometry asserted separately.
 8. **Errors**: `process_screen` on a pipe-mode process errors; `process_screen` on unknown id errors.

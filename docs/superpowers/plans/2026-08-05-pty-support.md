@@ -13,7 +13,7 @@
 - Language: Python 3.11+; async model: asyncio; MCP SDK: official `mcp` package.
 - Dependencies to add (pyproject.toml): `pyte>=0.8.2`, `pywinpty>=3.0.5 ; sys_platform == 'win32'`, `ptyprocess ; sys_platform != 'win32'`.
 - **Lazy imports rule:** `winpty`, `pyte`, `ptyprocess` may be imported ONLY inside functions (never at module top level of `portal_mcp/*.py`). The existing test suite must stay green on a machine where these packages are not installed.
-- **PTY facts (verified against sources):** `spawn(argv, cwd, env, dimensions=(rows, cols))` — rows first on both backends; `setwinsize(rows, cols)`; pywinpty `read()` returns `str` and raises `EOFError` (but may return `''` while alive and forever after `terminate()`); ptyprocess `read()` returns `bytes` and also raises `EOFError`; both `kill()` methods REQUIRE a signal argument; on Windows `os.kill` maps every non-CTRL signal to `TerminateProcess` — there is NO graceful terminate, the only graceful interrupt is writing `\u0003`.
+- **PTY facts (verified against sources):** `spawn(argv, cwd, env, dimensions=(rows, cols))` — rows first on both backends; `setwinsize(rows, cols)`; pywinpty `read()` returns `str` and raises `EOFError` (but may return `''` while alive and forever after `terminate()`); ptyprocess `read()` returns `bytes` and also raises `EOFError`; both `kill()` methods REQUIRE a signal argument; on Windows `os.kill` maps every non-CTRL signal to `TerminateProcess` — there is NO graceful terminate, the only graceful interrupt is writing `\u0003` followed by a carriage return.
 - pyte 0.8.x API: `pyte.Screen(columns, lines)` (columns first), `screen.display` (property, list of str), `screen.cursor.x/y`, `screen.resize(lines=..., columns=...)`, `pyte.Stream().feed(str)`. pyte does NOT implement the alternate screen buffer — PtyProcess must.
 - Empty `read()` result is NOT EOF. EOF is `EOFError` or `not isalive()`.
 - Test scripts must spawn `sys.executable` (never bare `"python"`); `-c` snippets must avoid double quotes; child scripts stay alive (`time.sleep(30)`) and teardown kills them — never print-and-exit.
@@ -803,11 +803,22 @@ class _WinPtyHandle:
 
     @classmethod
     def spawn(cls, argv, cwd, env, rows, cols):
-        from winpty import PtyProcess  # lazy import
+        # pywinpty's default legacy winpty backend never delivers
+        # stdin input to the child — force the real ConPTY backend
+        # (winpty-rs reads PYWINPTY_BACKEND at spawn time).
+        prev = os.environ.get("PYWINPTY_BACKEND")
+        os.environ["PYWINPTY_BACKEND"] = "1"
+        try:
+            from winpty import PtyProcess  # lazy import
 
-        return cls(PtyProcess.spawn(
-            argv, cwd=cwd, env=env, dimensions=(rows, cols)
-        ))
+            return cls(PtyProcess.spawn(
+                argv, cwd=cwd, env=env, dimensions=(rows, cols)
+            ))
+        finally:
+            if prev is None:
+                os.environ.pop("PYWINPTY_BACKEND", None)
+            else:
+                os.environ["PYWINPTY_BACKEND"] = prev
 
     def __init__(self, pty):
         self._pty = pty
@@ -1088,7 +1099,7 @@ class TestFakeHandlePipeline:
         mp = PtyProcess(pid, handle, 0)
         await mp.start(pty_db)
         await mp.kill()
-        assert handle.killed == [signal.SIGKILL]
+        assert handle.killed == [getattr(signal, "SIGKILL", 9)]
         assert handle.closed is True
         assert mp.status == "killed"
 
@@ -1112,7 +1123,7 @@ class TestFakeHandlePipeline:
         assert handle.written == ["\x03"]
         handle.alive = True
         await mp.send_signal("SIGKILL")  # must come last — kill sets status
-        assert handle.killed == [signal.SIGKILL]
+        assert handle.killed == [getattr(signal, "SIGKILL", 9)]
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -1136,8 +1147,14 @@ from portal_mcp import pty_backend
 from portal_mcp.ansi import strip_ansi
 from portal_mcp.database import Database
 
-# ESC [ ? 1047h / 1048h / 1049h  and the matching l (off) codes
-_ALT_SCREEN_PATTERN = re.compile(r"\x1b\[\?10(47|48|49)([hl])")
+# ESC [ ? 1047h / 1048h / 1049h  and the matching l (off) codes.
+# ConPTY renders child-written ESC as '?' on the console stream, so
+# both the raw \x1b[? form and the ConPTY '?[?' form are matched.
+_ALT_SCREEN_PATTERN = re.compile(r"(?:\x1b|\?)\[\?10(47|48|49)([hl])")
+
+# signal.SIGKILL does not exist on Windows Python; os.kill maps any
+# non-CTRL signal to TerminateProcess, so 9 is the correct value there.
+_SIGKILL = getattr(signal, "SIGKILL", 9)
 
 
 def _make_screen(rows: int, cols: int):
@@ -1341,7 +1358,10 @@ class PtyProcess:
                 await self.kill()
                 return
             if sig == "CTRL_C_EVENT":
-                self._handle.write("\x03")
+                # Under ConPTY cooked mode a bare \x03 is line-buffered
+                # and never becomes Ctrl+C; the following CR commits the
+                # line and triggers the interrupt (user-confirmed form).
+                self._handle.write("\x03\r")
                 return
             sig = getattr(signal, sig, None)
             if sig is None:
@@ -1361,7 +1381,7 @@ class PtyProcess:
         self._killed = True
         self._stop.set()
         try:
-            self._handle.kill(signal.SIGKILL)
+            self._handle.kill(_SIGKILL)
         except Exception:
             pass
         self._handle.close()  # unblocks a stuck blocking read()
@@ -1518,8 +1538,12 @@ class TestRealConPTY:
         mp = await PtyProcess.create(
             pty_db, pid, sys.executable, ["-c", "input('> ')"], None, None,
         )
-        await wait_records(pty_db, pid, "> ")
-        await mp.write_stdin(pty_db, "\x03")
+        # ConPTY renders the prompt's trailing space as a cursor move,
+        # so only the ">" itself lands in the records. A bare \x03 is
+        # line-buffered under ConPTY — the CR commits the line and
+        # triggers the interrupt (user-confirmed form).
+        await wait_records(pty_db, pid, ">")
+        await mp.write_stdin(pty_db, "\x03\r")
         try:
             await asyncio.wait_for(mp.wait_exit(), timeout=10)
         except asyncio.TimeoutError:
@@ -1539,8 +1563,8 @@ class TestRealConPTY:
             pty_db, pid, sys.executable,
             ["-c",
              "import sys, time; "
-             "sys.stdout.write('\\x1b[H'); "
-             "sys.stdout.write('XX\\r\\nYY'); "
+             "print('XX'); "
+             "sys.stdout.write('YY'); "
              "sys.stdout.flush(); time.sleep(30)"],
             None, None, cols=80, rows=24,
         )
@@ -1600,13 +1624,16 @@ class TestRealConPTY:
         pid = await _make_pid(pty_db, command=sys.executable)
         mp = await PtyProcess.create(
             pty_db, pid, sys.executable,
-            ["-c", "import sys; data = sys.stdin.read(65536); "
-             "sys.stdout.write('got %d' % len(data)); "
+            ["-c", "import sys; data = sys.stdin.readline(); "
+             "sys.stdout.write('got %d' % len(data.rstrip('\\r\\n'))); "
              "sys.stdout.flush(); import time; time.sleep(30)"],
             None, None,
         )
         await asyncio.sleep(0.5)
-        payload = "x" * 4096
+        # readline needs a line terminator — the 4096-char payload plus
+        # CR is split into a 4096-char write plus a 1-char write by the
+        # chunker, still exercising the 4096-char write cap.
+        payload = "x" * 4096 + "\r"
         await asyncio.wait_for(
             mp.write_stdin(pty_db, payload), timeout=5
         )
@@ -2138,7 +2165,7 @@ In `handle_call_tool`, pass the new argument:
                         "stream (terminal echo) — treat it as your "
                         "own input, not program output, and do not "
                         "re-send it. To interrupt a PTY process, "
-                        "send \u0003 (Ctrl+C); a KeyboardInterrupt "
+                        "send \u0003 followed by a carriage return (Ctrl+C then Enter — ConPTY is line-buffered, the CR triggers it); a KeyboardInterrupt "
                         "traceback in output is expected, not an "
                         "error. process_signal/process_kill are "
                         "hard-stop fallbacks."
@@ -2153,7 +2180,7 @@ In `handle_call_tool`, pass the new argument:
             "SIGTERM is mapped to TerminateProcess. "
             "For PTY processes: SIGTERM -> terminate (hard kill on "
             "Windows), SIGKILL -> kill, CTRL_C_EVENT -> Ctrl+C; for "
-            "a graceful interrupt use process_write with \u0003."
+            "a graceful interrupt use process_write with \u0003 followed by a carriage return."
 ```
 
 `process_inspect` description — append:
@@ -2249,7 +2276,7 @@ with:
 
 ```
                         "5. To interrupt a PTY process, `process_write` "
-                        "with `\u0003` (Ctrl+C); `process_signal` / "
+                        "with `\u0003` then a carriage return (Ctrl+C + Enter — ConPTY is line-buffered); `process_signal` / "
                         "`process_kill` are hard-stop fallbacks\n"
 ```
 
@@ -2316,7 +2343,7 @@ with:
                         "escalated attempt so a real hang "
                         "self-terminates. On hang: kill, restart with "
                         "pty: true. If a pty: true process sits in a "
-                        "pager, send q (or \u0003), kill, restart "
+                        "pager, send q then Enter (or \u0003 + Enter), kill, restart "
                         "without pty.\n"
                         "\n"
                         "## Registry feedback loop\n"
@@ -2405,7 +2432,7 @@ PTY mode differences from pipe mode:
   records, and prompts may arrive without a trailing newline
 - input you write is echoed back into the output stream (real terminal
   behavior) — treat echoes as your own input
-- to interrupt a PTY process, write `\u0003` (Ctrl+C) via
+- to interrupt a PTY process, write `\u0003` followed by a carriage return (Ctrl+C then Enter) via
   `process_write`; a `KeyboardInterrupt` traceback is expected output
 - exit code is `null` on Windows (ConPTY exposes none)
 
@@ -2453,7 +2480,7 @@ PTY 模式与管道模式的差异：
   `source="stderr"` 恒为空）
 - 记录是任意块，不是行——一行可能跨多条记录，提示符可能没有换行
 - 写入的输入会回显到输出流（真实终端行为）——回显是输入，不是输出
-- 中断 PTY 进程：用 `process_write` 发送 `\u0003`（Ctrl+C）；
+- 中断 PTY 进程：用 `process_write` 发送 `\u0003` 后再加一个回车（Ctrl+C + Enter，ConPTY 行缓冲）；
   `KeyboardInterrupt` 回溯是预期输出
 - Windows 上退出码为 `null`（ConPTY 不提供）
 

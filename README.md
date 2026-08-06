@@ -1,16 +1,52 @@
-# Portal MCP Server
+# Portal — MCP Server for Interactive Programs
 
-An MCP (Model Context Protocol) server purpose-built for **interactive programs**.
-Start, monitor, read/write I/O, and control interactive processes — all through
-MCP tool calls.
+An MCP (Model Context Protocol) server purpose-built for **interactive
+programs**. Start, monitor, read/write I/O, and control processes that
+need sustained bidirectional interaction — all through MCP tool calls.
+Where a one-shot Shell tool hangs on interactive programs, Portal is
+designed for them.
 
-**Use for:** SSH remote connections, GDB debugging, database CLIs (psql/mysql),
-REPL environments, and other programs requiring sustained bidirectional interaction.
+![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue)
+![MCP 1.x](https://img.shields.io/badge/MCP-1.x-purple)
+![Windows](https://img.shields.io/badge/Windows-supported-important)
+![POSIX](https://img.shields.io/badge/POSIX-supported-blue)
+![uv](https://img.shields.io/badge/uv-managed-blue)
+![License](https://img.shields.io/badge/License-MIT-green)
 
-**Not for:** Simple one-shot commands (`ls`, `echo`, etc.) — use the built-in Shell
-tool for those.
+## Why Portal
 
-## Installation
+AI agents (Claude, Cursor, …) can drive **interactive programs** the way
+they drive a shell — minus the hanging:
+
+- **Interactive programs, end to end** — start, read/write I/O, signal,
+  and kill processes that require sustained bidirectional interaction
+  (SSH, GDB, database CLIs, REPLs, full-screen TUIs).
+- **Real terminal (PTY) support** — ConPTY on Windows (10 1809+) and
+  ptyprocess on POSIX. Programs that check `isatty()` (ssh, gdb, psql,
+  REPLs) behave exactly as they do in a human-run terminal.
+- **Full-screen TUI snapshots** — `process_screen` captures the live
+  screen of vim, htop, less and other full-screen TUIs, whose raw record
+  streams are garbled fragments.
+- **Never hangs, never orphans** — a per-process idle timeout kills
+  stuck programs and cleans up their data.
+- **Learns from experience** — a persistent, machine-global registry
+  (`program_query` / `program_record`) remembers which executables need
+  a PTY, with a confirmation counter so settled facts stick.
+- **Clean output** — ANSI escape sequences stripped; I/O history stored
+  in SQLite with timestamps, queryable per source (stdout / stderr /
+  stdin).
+- **Cross-platform** — Windows and POSIX, Python 3.11+, run via uv with
+  zero installation.
+
+### When to use it
+
+| Situation | Examples | Use |
+|-----------|----------|-----|
+| Interactive programs | ssh, gdb, psql, mysql, telnet, REPLs | **Portal** |
+| Full-screen TUIs | vim, htop, less, top, man | **Portal** |
+| One-shot commands | `ls`, `echo`, build commands | built-in Shell tool |
+
+## Quick Start
 
 No package installation needed — Portal runs directly with `uv`:
 
@@ -22,7 +58,7 @@ Requires [uv](https://docs.astral.sh/uv/) and Python 3.11+. Dependencies are
 managed by uv from `pyproject.toml`: `mcp` (1.x), `aiosqlite`, `pyte`, plus
 `pywinpty` (Windows) / `ptyprocess` (POSIX).
 
-## Configuration
+### MCP client configuration
 
 Add to your MCP client configuration (e.g., Claude Code), substituting
 `<PORTAL_PATH>` with the absolute path of this repo:
@@ -52,11 +88,12 @@ fresh on every startup, kept as timestamped history, and named
 per-instance so a lingering or concurrent server can never lock the
 file and block a new one.
 
-## One-Click Install
+### One-Click Install
 
-Copy the prompt from [`llms-install.md`](llms-install.md) into your AI agent to automatically install and configure Portal.
+Copy the prompt from [`llms-install.md`](llms-install.md) into your AI
+agent to automatically install and configure Portal.
 
-## Tools
+## MCP Tools
 
 | Tool | Description |
 |------|-------------|
@@ -73,6 +110,8 @@ Copy the prompt from [`llms-install.md`](llms-install.md) into your AI agent to 
 | `process_screen` | Snapshot the live screen of a PTY process (for full-screen TUIs) |
 | `program_query` | Look up whether a program needs a PTY (persistent registry) |
 | `program_record` | Record a confirmed program fact in the persistent registry |
+
+## Tools Reference
 
 ### process_start
 
@@ -154,7 +193,7 @@ or `killed` processes.
 
 - `id` (required): Internal process ID
 
-## Virtual PTY support
+## Virtual PTY Support
 
 By default Portal runs programs on OS pipes. Programs that check
 `isatty()` (ssh, gdb, psql, interactive REPLs) or render full-screen
@@ -169,7 +208,7 @@ PTY mode differences from pipe mode:
   records, and prompts may arrive without a trailing newline
 - input you write is echoed back into the output stream (real terminal
   behavior) — treat echoes as your own input
-- to interrupt a PTY process, write `\u0003` and a carriage return as two separate writes (Ctrl+C then Enter — split delivery is measurably more reliable) via
+- to interrupt a PTY process, write `` and a carriage return as two separate writes (Ctrl+C then Enter — split delivery is measurably more reliable) via
   `process_write`; a `KeyboardInterrupt` traceback is expected output
 - `process_signal` on PTY processes supports only SIGTERM (terminate,
   a hard kill on Windows), SIGKILL (kill) and CTRL_C_EVENT (graceful
@@ -249,4 +288,9 @@ uv run pytest tests/ -v
 
 ## License
 
-MIT
+[MIT](LICENSE) — free to use, modify, distribute, and integrate into
+commercial projects, with attribution.
+
+## Author
+
+Developed and maintained by [TieFeiyu](https://github.com/tiefeiyu).

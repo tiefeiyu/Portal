@@ -52,6 +52,7 @@ claude mcp add portal -- uv run --project "<PORTAL_PATH>" portal-mcp
 |------|------|
 | `process_start` | 启动子进程，可指定参数、工作目录、环境变量、超时 |
 | `process_read` | 读取进程输出（stdout/stderr/stdin/both），按时间范围查询 |
+| `process_read_new` | 读取自上次读取以来新产生的输出（按源分游标，服务端自动记忆） |
 | `process_write` | 向进程的 stdin 写入内容 |
 | `process_signal` | 向进程发送操作系统信号 |
 | `process_list` | 列出所有托管进程及其概要信息 |
@@ -88,6 +89,20 @@ claude mcp add portal -- uv run --project "<PORTAL_PATH>" portal-mcp
 - `source`（可选）：`stdout`、`stderr`、`stdin` 或 `both`，默认 `both`
 - `duration`（可选）：向前读取多长时间内的记录，默认 1000
 - `unit`（可选）：时间单位 — `ns`、`us`、`ms`、`s`，默认 `ms`
+
+返回：记录列表，每条包含 `timestamp`、`source`、`content`
+
+### process_read_new
+
+读取自上次调用该工具以来新产生的输出（按源分别记录游标），并重置空闲计时器。
+
+- `id`（必填）：内部进程 ID
+- `source`（可选）：`stdout`、`stderr` 或 `both`，默认 `both`
+
+服务端按进程、按源分别记忆读取位置，重复调用时每条记录恰好返回一次，
+按插入顺序返回。只有所请求源的游标会推进 —— 读取 `stdout` 不会导致
+`stderr` 记录被跳过，反之亦然。`process_read`（时间窗读取）不影响这些
+游标；`process_clear` 会重置它们。
 
 返回：记录列表，每条包含 `timestamp`、`source`、`content`
 

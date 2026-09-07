@@ -99,6 +99,7 @@ agent to automatically install and configure Portal.
 |------|-------------|
 | `process_start` | Start a subprocess with optional args, cwd, env, timeout |
 | `process_read` | Read output records (stdout/stderr/stdin/both) within a time window |
+| `process_read_new` | Read output produced since the last read (per source, server-side cursor) |
 | `process_write` | Write content to a process's stdin |
 | `process_signal` | Send an OS-native signal to a process |
 | `process_list` | List all managed processes with summary info |
@@ -137,6 +138,23 @@ Read captured output from a process. Resets the idle timer.
 - `source` (optional): `stdout`, `stderr`, `stdin`, or `both` (default: `both`)
 - `duration` (optional): How far back to read (default: 1000)
 - `unit` (optional): Time unit — `ns`, `us`, `ms`, `s` (default: `ms`)
+
+Returns: List of records with `timestamp`, `source`, `content`
+
+### process_read_new
+
+Read output produced since the last call to this tool, for the requested
+source. Resets the idle timer.
+
+- `id` (required): Internal process ID
+- `source` (optional): `stdout`, `stderr`, or `both` (default: `both`)
+
+The server remembers the read position per process and per source, so
+repeated calls return each record exactly once, in insertion order.
+Only the requested source's cursor advances — reading `stdout` never
+causes `stderr` records to be skipped and vice versa. `process_read`
+(time-window) does not affect these cursors; `process_clear` resets
+them.
 
 Returns: List of records with `timestamp`, `source`, `content`
 

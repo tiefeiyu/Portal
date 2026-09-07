@@ -222,15 +222,19 @@ class TestReadNew:
             await manager.read_new(99999)
 
     async def test_read_new_resets_idle_timer(self, manager):
+        """Discriminating version: asserts last_active_at strictly
+        advances across read_new (a missing touch would not be caught
+        by the old status-only assertion)."""
         result = await manager.start(
             command=sys.executable,
             args=["-c", "import time; time.sleep(2)"],
             timeout_ms=5000,
         )
         await asyncio.sleep(0.1)
+        before = (await manager.inspect(result["id"]))["last_active_at"]
         await manager.read_new(result["id"])
-        proc_info = await manager.inspect(result["id"])
-        assert proc_info["status"] == "running"
+        after = (await manager.inspect(result["id"]))["last_active_at"]
+        assert after > before
 
 
 class TestWrite:

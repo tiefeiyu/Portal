@@ -29,8 +29,8 @@ class TestDatabaseInitialize:
         assert row[0] == "processes"
 
     async def test_initialize_adds_cursor_column_to_stale_db(self, tmp_path):
-        """A stale DB whose processes table lacks read_cursors must not
-        crash initialize() (safety net for direct Database() use)."""
+        """A stale DB whose processes table lacks read_cursors/read_gen
+        must not crash initialize() (safety net for direct Database() use)."""
         import sqlite3
 
         path = str(tmp_path / "stale.db")
@@ -54,6 +54,7 @@ class TestDatabaseInitialize:
         )
         names = [row[1] for row in await cursor.fetchall()]
         assert "read_cursors" in names
+        assert "read_gen" in names
         await database.close()
 
     async def test_initialize_clears_old_data(self, db):
@@ -62,6 +63,12 @@ class TestDatabaseInitialize:
         await db.initialize()
         processes = await db.get_all_processes()
         assert len(processes) == 0
+        # leftover per-process record tables die with their rows
+        cursor = await db._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+            (f"proc_{pid}",),
+        )
+        assert await cursor.fetchone() is None
 
 
 class TestCreateProcess:
@@ -196,37 +203,38 @@ class TestReadNewRecords:
         row = await db.get_process(proc)
         assert json.loads(row["read_cursors"])["1"] == 2
 
-    async def test_stale_advance_after_clear_does_not_resurrect_cursor(
-        self, db, proc
-    ):
-        """A read_new snapshot taken before a process_clear must not re-raise
-        the cursor after the clear reset (rowids restart at 1 — a
-        resurrected cursor would skip post-clear records)."""
+    async def test_stale_advance_blocked_by_read_gen(self, db, proc):
+        """A stale advance (snapshotted read_gen) after clear_records must
+        be a no-op: the advance UPDATE is conditioned on read_gen, and
+        clear bumps it — works even for old=0 first reads."""
         await db.insert_record(proc, 1000, 1, "out1")
         await db.insert_record(proc, 2000, 1, "out2")
-        await db.read_new_records(proc, [1])          # cursor -> 2 (old=0)
-        await db.clear_records(proc)                  # table emptied + reset
-        await db.insert_record(proc, 3000, 1, "b")    # rowid 1 again
-        # stale in-flight snapshot: old cursor 2, computed next 3
-        await db._conn.execute(
+        await db.read_new_records(proc, [1])        # cursor -> 2, gen 0
+        await db.clear_records(proc)                # gen -> 1, cursor {}
+        await db.insert_record(proc, 3000, 1, "b")  # rowid 1 again
+        # stale in-flight advance under the OLD generation (0)
+        cur = await db._conn.execute(
             "UPDATE processes SET read_cursors = json_set("
             "  read_cursors, '$.\"1\"',"
-            "  CASE WHEN COALESCE(json_extract(read_cursors, '$.\"1\"'), 0) < 2"
-            "       THEN COALESCE(json_extract(read_cursors, '$.\"1\"'), 0)"
-            "       ELSE MAX(COALESCE(json_extract(read_cursors, '$.\"1\"'), 0), 3)"
-            "  END"
-            ") WHERE id = ?",
+            "  MAX(COALESCE(json_extract(read_cursors, '$.\"1\"'), 0), 99)"
+            ") WHERE id = ? AND read_gen = 0",
             (proc,),
         )
         await db._conn.commit()
+        assert cur.rowcount == 0
         row = await db.get_process(proc)
-        # Guard no-oped: the key was written back as the current value 0
-        # (missing/0 are cursor-equivalent to the clear's {} — NOT
-        # re-raised to the stale cursor 2).
-        assert json.loads(row["read_cursors"]) == {"1": 0}
-        # and the post-clear record remains visible to the next real read
-        records, cursors = await db.read_new_records(proc, [1])
+        assert json.loads(row["read_cursors"]) == {}
+        # a fresh read still sees the post-clear record
+        records, _ = await db.read_new_records(proc, [1])
         assert [r["content"] for r in records] == ["b"]
+
+    async def test_empty_source_codes_rejected(self, db, proc):
+        with pytest.raises(ValueError, match="source_codes"):
+            await db.read_new_records(proc, [])
+
+    async def test_unknown_process_raises(self, db):
+        with pytest.raises(ValueError, match="not found"):
+            await db.read_new_records(999, [1])
 
 
 class TestUpdateStatus:
@@ -311,6 +319,17 @@ class TestClearRecords:
         records, cursors = await db.read_new_records(pid, [1, 2])
         assert [r["content"] for r in records] == ["b"]
         assert cursors == {1: 1, 2: 0}
+
+    async def test_clear_bumps_read_gen(self, db):
+        """clear_records bumps read_gen (default 0 → 1), which is what
+        makes a stale snapshot's advance no-op."""
+        pid = await db.create_process("cmd", [], None, None, 0, 0)
+        await db.create_proc_table(pid)
+        assert (await db.get_process(pid))["read_gen"] == 0
+        await db.insert_record(pid, 1000, 1, "a")
+        await db.read_new_records(pid, [1, 2])
+        await db.clear_records(pid)
+        assert (await db.get_process(pid))["read_gen"] == 1
 
 
 class TestCleanupProcess:

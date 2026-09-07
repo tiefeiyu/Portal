@@ -196,6 +196,38 @@ class TestReadNewRecords:
         row = await db.get_process(proc)
         assert json.loads(row["read_cursors"])["1"] == 2
 
+    async def test_stale_advance_after_clear_does_not_resurrect_cursor(
+        self, db, proc
+    ):
+        """A read_new snapshot taken before a process_clear must not re-raise
+        the cursor after the clear reset (rowids restart at 1 — a
+        resurrected cursor would skip post-clear records)."""
+        await db.insert_record(proc, 1000, 1, "out1")
+        await db.insert_record(proc, 2000, 1, "out2")
+        await db.read_new_records(proc, [1])          # cursor -> 2 (old=0)
+        await db.clear_records(proc)                  # table emptied + reset
+        await db.insert_record(proc, 3000, 1, "b")    # rowid 1 again
+        # stale in-flight snapshot: old cursor 2, computed next 3
+        await db._conn.execute(
+            "UPDATE processes SET read_cursors = json_set("
+            "  read_cursors, '$.\"1\"',"
+            "  CASE WHEN COALESCE(json_extract(read_cursors, '$.\"1\"'), 0) < 2"
+            "       THEN COALESCE(json_extract(read_cursors, '$.\"1\"'), 0)"
+            "       ELSE MAX(COALESCE(json_extract(read_cursors, '$.\"1\"'), 0), 3)"
+            "  END"
+            ") WHERE id = ?",
+            (proc,),
+        )
+        await db._conn.commit()
+        row = await db.get_process(proc)
+        # Guard no-oped: the key was written back as the current value 0
+        # (missing/0 are cursor-equivalent to the clear's {} — NOT
+        # re-raised to the stale cursor 2).
+        assert json.loads(row["read_cursors"]) == {"1": 0}
+        # and the post-clear record remains visible to the next real read
+        records, cursors = await db.read_new_records(proc, [1])
+        assert [r["content"] for r in records] == ["b"]
+
 
 class TestUpdateStatus:
     async def test_update_to_exited(self, db):

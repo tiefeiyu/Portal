@@ -233,6 +233,8 @@ class ProcessManager:
         if proc is None:
             raise ValueError(f"Process {proc_id} not found")
 
+        # Intentionally differs from _source_to_codes: stdin (0) is
+        # excluded — read_new returns output, not the write-log.
         source_map = {"stdout": [1], "stderr": [2], "both": [1, 2]}
         if source not in source_map:
             raise ValueError(

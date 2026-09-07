@@ -152,7 +152,16 @@ class Database:
         processes.read_cursors. Only the requested sources' cursors
         advance; the advance is one atomic UPDATE that applies a
         per-source MAX against the currently stored value, so concurrent
-        read_new calls can never regress a cursor.
+        read_new calls can never regress a cursor. Each assignment also
+        guards the clear race: stored cursors only ever grow (MAX guard)
+        or reset to 0 (clear_records), so if the value stored at UPDATE
+        time is below the cursor this call originally read (``old``), a
+        process_clear happened between this call's snapshot and its
+        advance — the advance no-ops (writes back the current value), so
+        a stale snapshot can never re-raise a reset cursor past the
+        post-clear rowids (which restart at 1). The stored value is read
+        and written inside the single atomic UPDATE statement, so there
+        is no remaining interleaving window.
 
         Args:
             proc_id: Internal process ID.
@@ -195,15 +204,25 @@ class Database:
             )
 
         # Atomic per-source MAX against the current stored JSON value.
+        # Each assignment guards the clear race: if the value stored at
+        # UPDATE time is below the cursor this call originally read
+        # (old), a process_clear happened after this call's snapshot and
+        # the advance must no-op (write back the current value) — a
+        # stale snapshot can never re-raise a reset cursor. The stored
+        # value is read and advanced in the same atomic UPDATE, so there
+        # is no remaining interleaving window.
         set_parts = []
         params: list = []
         for code in source_codes:
+            old = cursors.get(code, 0)
             path = f'$."{code}"'
+            current = f"COALESCE(json_extract(read_cursors, '{path}'), 0)"
             set_parts.append(
                 f"'{path}', "
-                f"MAX(COALESCE(json_extract(read_cursors, '{path}'), 0), ?)"
+                f"CASE WHEN {current} < ? THEN {current} "
+                f"ELSE MAX({current}, ?) END"
             )
-            params.append(next_cursors[code])
+            params.extend([old, next_cursors[code]])
         await self._conn.execute(
             "UPDATE processes SET read_cursors = json_set(read_cursors, "
             + ", ".join(set_parts)

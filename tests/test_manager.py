@@ -108,6 +108,131 @@ class TestRead:
         assert proc_info["status"] == "running"
 
 
+class TestReadNew:
+    async def test_first_read_returns_all_output(self, manager):
+        result = await manager.start(
+            command=sys.executable,
+            args=["-c", "print('hello new')"],
+        )
+        await asyncio.sleep(0.3)
+        records = await manager.read_new(result["id"])
+        assert "hello new" in "".join(r["content"] for r in records)
+
+    async def test_second_read_returns_only_new_output(self, manager):
+        result = await manager.start(
+            command=sys.executable,
+            args=[
+                "-c",
+                "import sys, time; "
+                "print('first', flush=True); "
+                "time.sleep(1); "
+                "print('second', flush=True)",
+            ],
+        )
+        await asyncio.sleep(0.3)
+        records = await manager.read_new(result["id"])
+        assert "first" in "".join(r["content"] for r in records)
+        await asyncio.sleep(1.2)
+        records = await manager.read_new(result["id"])
+        contents = "".join(r["content"] for r in records)
+        assert "second" in contents
+        assert "first" not in contents
+
+    async def test_narrow_reads_do_not_skip_other_source(self, manager):
+        # stdout record is written BEFORE the stderr one; a single
+        # shared cursor would advance past it on the stderr read.
+        result = await manager.start(
+            command=sys.executable,
+            args=[
+                "-c",
+                "import sys, time; "
+                "print('out1', flush=True); "
+                "time.sleep(0.05); "
+                "sys.stderr.write('err1\\n'); "
+                "sys.stderr.flush(); "
+                "time.sleep(30)",
+            ],
+        )
+        await asyncio.sleep(0.5)
+        records = await manager.read_new(result["id"], "stderr")
+        assert "err1" in "".join(r["content"] for r in records)
+        records = await manager.read_new(result["id"], "stdout")
+        assert "out1" in "".join(r["content"] for r in records)
+
+    async def test_both_advances_every_cursor(self, manager):
+        result = await manager.start(
+            command=sys.executable,
+            args=[
+                "-c",
+                "import sys, time; "
+                "print('out1', flush=True); "
+                "sys.stderr.write('err1\\n'); "
+                "sys.stderr.flush(); "
+                "time.sleep(30)",
+            ],
+        )
+        await asyncio.sleep(0.5)
+        await manager.read_new(result["id"], "both")
+        assert await manager.read_new(result["id"], "stdout") == []
+        assert await manager.read_new(result["id"], "stderr") == []
+
+    async def test_process_read_does_not_move_cursors(self, manager):
+        result = await manager.start(
+            command=sys.executable,
+            args=["-c", "print('data')"],
+        )
+        await asyncio.sleep(0.3)
+        records = await manager.read(result["id"], "both", 3000, "ms")
+        assert "data" in "".join(r["content"] for r in records)
+        records = await manager.read_new(result["id"])
+        assert "data" in "".join(r["content"] for r in records)
+
+    async def test_clear_resets_cursors(self, manager):
+        result = await manager.start(
+            command=sys.executable,
+            args=[
+                "-c",
+                "import time; "
+                "print('a', flush=True); "
+                "time.sleep(1); "
+                "print('b', flush=True); "
+                "time.sleep(30)",
+            ],
+        )
+        await asyncio.sleep(0.3)
+        records = await manager.read_new(result["id"])
+        assert "a" in "".join(r["content"] for r in records)
+        await manager.clear(result["id"])
+        await asyncio.sleep(1.2)
+        records = await manager.read_new(result["id"])
+        contents = "".join(r["content"] for r in records)
+        assert "b" in contents
+        assert "a" not in contents
+
+    async def test_unknown_source_rejected(self, manager):
+        result = await manager.start(
+            command=sys.executable,
+            args=["-c", "import time; time.sleep(1)"],
+        )
+        with pytest.raises(ValueError, match="Unknown source"):
+            await manager.read_new(result["id"], "stdin")
+
+    async def test_nonexistent_process_raises(self, manager):
+        with pytest.raises(ValueError, match="not found"):
+            await manager.read_new(99999)
+
+    async def test_read_new_resets_idle_timer(self, manager):
+        result = await manager.start(
+            command=sys.executable,
+            args=["-c", "import time; time.sleep(2)"],
+            timeout_ms=5000,
+        )
+        await asyncio.sleep(0.1)
+        await manager.read_new(result["id"])
+        proc_info = await manager.inspect(result["id"])
+        assert proc_info["status"] == "running"
+
+
 class TestWrite:
     async def test_write_stdin(self, manager):
         result = await manager.start(

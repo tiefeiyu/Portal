@@ -214,6 +214,40 @@ class ProcessManager:
 
         return await self._db.read_records(proc_id, sources, since_ts)
 
+    async def read_new(self, proc_id: int, source: str = "both") -> list[dict]:
+        """Read records produced since the last read_new for a source.
+
+        The server remembers the read position per process and per
+        source; repeated calls return each record exactly once, in
+        insertion order. Only the requested source's cursor advances.
+        Resets the idle timer like read.
+
+        Args:
+            proc_id: Internal process ID.
+            source: "stdout", "stderr", or "both".
+
+        Returns:
+            List of records with timestamp, source, content.
+        """
+        proc = await self._db.get_process(proc_id)
+        if proc is None:
+            raise ValueError(f"Process {proc_id} not found")
+
+        source_map = {"stdout": [1], "stderr": [2], "both": [1, 2]}
+        if source not in source_map:
+            raise ValueError(
+                f"Unknown source '{source}'. "
+                f"Supported: stdout, stderr, both"
+            )
+
+        # Touch the process to reset idle timer
+        await self._db.touch(proc_id)
+
+        records, _ = await self._db.read_new_records(
+            proc_id, source_map[source]
+        )
+        return records
+
     async def screen(
         self, proc_id: int, cols: int | None = None, rows: int | None = None
     ) -> dict:

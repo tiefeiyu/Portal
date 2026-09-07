@@ -29,7 +29,7 @@ tests remain unchanged.
 | Source param | `source: "stdout" \| "stderr" \| "both"` (default `both`), **no `stdin`** | User requirement: the tool must be filterable by source. `stdin` records are a write-log, not program output — excluded like `process_read`'s `both`; `process_read` remains available for them |
 | Relationship to `process_read` | **Independent cursors** | Time-window reads keep their semantics; mixing them would silently swallow new output whenever a window read lands after an incremental read |
 | `process_clear` | Resets cursors to `{}` | After `DELETE FROM proc_<id>`, SQLite reallocates rowids from 1 — stale high cursors would make new records invisible. Reset makes "clear, then read_new" mean "everything since the clear" |
-| Atomicity | cursor-read + record-read + cursor-write in one transaction | Two concurrent calls would otherwise read-row/advance interleaved and could regress a cursor (duplicate delivery) — `MAX` guards can't fix an interleaved read; `BEGIN`/`COMMIT` fixes it at the source |
+| Atomicity | Cursor advance is one **atomic single-statement UPDATE** with per-source `MAX` against the stored JSON (`json_set`/`json_extract`) | Two concurrent calls would otherwise read-row/advance interleaved and could regress a cursor; the `MAX`-guarded UPDATE is executed atomically by SQLite, so monotonicity holds — each caller still returns its own snapshot once (no single caller sees duplicates or skips) |
 | PTY processes | Same path, no special case | PTY records are also inserted via `db.insert_record` (chunk granularity, merged stderr into stdout); full-screen TUIs still use `process_screen` |
 | Naming | `process_read_new` | Mirrors `process_read`; "new" == "since last read of that source" |
 
@@ -49,17 +49,19 @@ Portal MCP Server
   │     └── db.read_new_records(...)   → (records, next_cursors)
   ├── Database
   │     ├── processes.read_cursors     (new JSON column, default '{}')
-  │     ├── read_new_records(proc_id, source_codes, cursors)
-  │     │     BEGIN
+  │     ├── read_new_records(proc_id, source_codes)
+  │     │     SELECT read_cursors FROM processes
   │     │     SELECT rowid, timestamp, source, content
   │     │     FROM proc_<id>
   │     │     WHERE (source = 1 AND rowid > :c1)
   │     │        OR (source = 2 AND rowid > :c2)     ← only requested codes
   │     │     ORDER BY rowid
   │     │     → per-source next cursors = max returned rowid per code
-  │     │     UPDATE processes SET read_cursors = <JSON merge>
-  │     │     COMMIT                              (no interleaved advance)
-  │     ├── advance via the same transaction (no separate method)
+  │     │     UPDATE processes SET read_cursors = json_set(
+  │     │         read_cursors, '$."1"', MAX(COALESCE(json_extract(
+  │     │             read_cursors, '$."1"'), 0), :next1), ...)
+  │     │     ← one atomic statement; MAX vs current stored value
+  │     │       makes concurrent calls monotonic (no regression)
   │     └── clear_records(proc_id)     (now also resets read_cursors = '{}')
   └── (registry, ansi.py, process.py, pty_process.py — unchanged)
 ```
@@ -123,13 +125,16 @@ Tool description (drafted):
   if a stale DB file without the column is opened directly (normal
   `create_server` startup unlinks the file first, so this is purely a
   safety net for direct `Database()` use in tests).
-- New `read_new_records(proc_id, source_codes, cursors) -> (records,
-  next_cursors)`:
-  - one transaction: parse cursor JSON → build the `OR`-per-source
-    predicate → `SELECT rowid, timestamp, source, content ... ORDER BY
-    rowid` → `next_cursors` = per-source max of returned rowids (an
-    unchanged value when a source returned no rows) → UPDATE
-    `read_cursors` JSON merge with `MAX(old, new)` per key → COMMIT.
+- New `read_new_records(proc_id, source_codes: list[int]) -> tuple[
+  records, next_cursors]` (cursors are read from the DB internally, not
+  passed by the caller):
+  - parse cursor JSON → build the `OR`-per-source predicate →
+    `SELECT rowid, timestamp, source, content ... ORDER BY rowid` →
+    `next_cursors` = per-source max of returned rowids (the previous
+    cursor value when a source returned no rows) → single atomic
+    `UPDATE processes SET read_cursors = json_set(... MAX(json_extract(
+    ...), :next) ...)` (per-source `MAX` against the current stored
+    value — monotonic under concurrent calls, no transaction needed).
 - `clear_records(proc_id)`: after the DELETE, set `read_cursors = '{}'`.
 
 ### `portal_mcp/manager.py`
@@ -169,7 +174,7 @@ Tool description (drafted):
 | Process cleaned up | Cursors are gone with the process — nothing special |
 | `process_clear` then new output | Cursors reset to `{}`; first `read_new` returns everything since the clear |
 | Records written during a read | Rowids higher than `next_cursors`; returned by the next call (cursors = returned max, not table max) |
-| Concurrent `read_new` calls | One-transaction read+advance: the second call sees the committed cursor and advances monotonically — no duplicates, no regression |
+| Concurrent `read_new` calls | Atomic `MAX`-guarded UPDATE: cursors advance monotonically (no regression); each caller returns exactly one snapshot — a given record is returned at most once per caller |
 | Narrow reads (`stdout` then `stderr`) | Per-source cursors: no other-source record ever falls behind a cursor |
 | Equal-nanosecond records | Rowid order is total and stable — no duplicates or skips; `process_read`'s timestamp order is unaffected |
 | PTY chunk records | Returned as stored (chunks, merged stderr in stdout) — same caveats as `process_read` |

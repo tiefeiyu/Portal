@@ -1,4 +1,5 @@
 """Tests for database layer."""
+import json
 import os
 import tempfile
 import pytest
@@ -26,6 +27,34 @@ class TestDatabaseInitialize:
         row = await cursor.fetchone()
         assert row is not None
         assert row[0] == "processes"
+
+    async def test_initialize_adds_cursor_column_to_stale_db(self, tmp_path):
+        """A stale DB whose processes table lacks read_cursors must not
+        crash initialize() (safety net for direct Database() use)."""
+        import sqlite3
+
+        path = str(tmp_path / "stale.db")
+        conn = sqlite3.connect(path)
+        conn.execute(
+            "CREATE TABLE processes ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "os_pid INTEGER, status TEXT NOT NULL DEFAULT 'running',"
+            "started_at INTEGER NOT NULL,"
+            "timeout_ms INTEGER NOT NULL DEFAULT 0,"
+            "last_active_at INTEGER NOT NULL, command TEXT NOT NULL,"
+            "args TEXT DEFAULT '[]', cwd TEXT, env TEXT DEFAULT '{}',"
+            "exit_code INTEGER)"
+        )
+        conn.close()
+
+        database = Database(path)
+        await database.initialize()
+        cursor = await database._conn.execute(
+            "PRAGMA table_info(processes)"
+        )
+        names = [row[1] for row in await cursor.fetchall()]
+        assert "read_cursors" in names
+        await database.close()
 
     async def test_initialize_clears_old_data(self, db):
         pid = await db.create_process("cmd", [], None, None, 5000, 1000000)
@@ -108,6 +137,66 @@ class TestInsertAndRead:
         assert len(records) == 2
 
 
+class TestReadNewRecords:
+    @pytest.fixture
+    async def proc(self, db):
+        pid = await db.create_process("cmd", [], None, None, 0, 0)
+        await db.create_proc_table(pid)
+        return pid
+
+    async def test_returns_all_records_on_first_read(self, db, proc):
+        await db.insert_record(proc, 1000, 1, "out1")
+        await db.insert_record(proc, 2000, 2, "err1")
+        records, cursors = await db.read_new_records(proc, [1, 2])
+        assert [r["content"] for r in records] == ["out1", "err1"]
+        assert cursors == {1: 1, 2: 2}
+        assert records[0]["timestamp"] == 1000
+        assert records[0]["source"] == 1
+
+    async def test_second_read_returns_nothing_new(self, db, proc):
+        await db.insert_record(proc, 1000, 1, "out1")
+        records, cursors = await db.read_new_records(proc, [1])
+        assert [r["content"] for r in records] == ["out1"]
+        records2, cursors2 = await db.read_new_records(proc, [1])
+        assert records2 == []
+        assert cursors2 == {1: 1}
+
+    async def test_per_source_cursors_are_independent(self, db, proc):
+        await db.insert_record(proc, 1000, 1, "out1")
+        await db.insert_record(proc, 2000, 2, "err1")
+        records, cursors = await db.read_new_records(proc, [1])
+        assert [r["content"] for r in records] == ["out1"]
+        assert cursors == {1: 1}
+        # stderr cursor untouched: the stderr record is still "new"
+        records, cursors = await db.read_new_records(proc, [2])
+        assert [r["content"] for r in records] == ["err1"]
+        assert cursors == {2: 2}
+
+    async def test_stdin_records_never_returned(self, db, proc):
+        await db.insert_record(proc, 1000, 0, "echo")
+        await db.insert_record(proc, 2000, 1, "out1")
+        records, cursors = await db.read_new_records(proc, [1, 2])
+        assert [r["content"] for r in records] == ["out1"]
+        assert cursors == {1: 2, 2: 0}
+
+    async def test_cursor_update_is_max_guarded(self, db, proc):
+        """A stale advance with a smaller cursor must not regress the
+        stored value (the UPDATE applies MAX against current value)."""
+        await db.insert_record(proc, 1000, 1, "out1")
+        await db.insert_record(proc, 2000, 1, "out2")
+        await db.read_new_records(proc, [1])  # cursor -> 2
+        await db._conn.execute(
+            'UPDATE processes SET read_cursors = json_set('
+            '  read_cursors, \'$."1"\','
+            "  MAX(COALESCE(json_extract(read_cursors, '$.\"1\"'), 0), 1)"
+            ") WHERE id = ?",
+            (proc,),
+        )
+        await db._conn.commit()
+        row = await db.get_process(proc)
+        assert json.loads(row["read_cursors"])["1"] == 2
+
+
 class TestUpdateStatus:
     async def test_update_to_exited(self, db):
         pid = await db.create_process("cmd", [], None, None, 0, 0)
@@ -176,6 +265,20 @@ class TestClearRecords:
         await db.clear_records(pid)
         counts = await db.io_count(pid)
         assert counts["total"] == 0
+
+    async def test_resets_read_cursors(self, db):
+        pid = await db.create_process("cmd", [], None, None, 0, 0)
+        await db.create_proc_table(pid)
+        await db.insert_record(pid, 1000, 1, "a")
+        await db.read_new_records(pid, [1, 2])
+        await db.clear_records(pid)
+        row = await db.get_process(pid)
+        assert json.loads(row["read_cursors"]) == {}
+        # rowid restarts at 1 after DELETE — a stale cursor would skip
+        await db.insert_record(pid, 2000, 1, "b")
+        records, cursors = await db.read_new_records(pid, [1, 2])
+        assert [r["content"] for r in records] == ["b"]
+        assert cursors == {1: 1, 2: 0}
 
 
 class TestCleanupProcess:

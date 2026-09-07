@@ -41,13 +41,24 @@ class Database:
                 args TEXT DEFAULT '[]',
                 cwd TEXT,
                 env TEXT DEFAULT '{}',
-                exit_code INTEGER
+                exit_code INTEGER,
+                read_cursors TEXT NOT NULL DEFAULT '{}'
             )
             """
         )
         # Clean any leftover data from previous runs
         await self._conn.execute("DELETE FROM processes")
         await self._conn.commit()
+        # Safety net: a stale DB file opened without the column (callers
+        # that skip create_server's startup unlink) gets it added.
+        cursor = await self._conn.execute("PRAGMA table_info(processes)")
+        names = {row[1] for row in await cursor.fetchall()}
+        if "read_cursors" not in names:
+            await self._conn.execute(
+                "ALTER TABLE processes ADD COLUMN "
+                "read_cursors TEXT NOT NULL DEFAULT '{}'"
+            )
+            await self._conn.commit()
 
     async def create_process(
         self,
@@ -132,6 +143,77 @@ class Database:
             for row in rows
         ]
 
+    async def read_new_records(
+        self, proc_id: int, source_codes: list[int]
+    ) -> tuple[list[dict], dict[int, int]]:
+        """Read records newer than each source's cursor and advance cursors.
+
+        Cursors are stored per source code as JSON in
+        processes.read_cursors. Only the requested sources' cursors
+        advance; the advance is one atomic UPDATE that applies a
+        per-source MAX against the currently stored value, so concurrent
+        read_new calls can never regress a cursor.
+
+        Args:
+            proc_id: Internal process ID.
+            source_codes: Source codes to return ([1]=stdout, [2]=stderr).
+
+        Returns:
+            Tuple of (records, next_cursors): records in insertion
+            (rowid) order with timestamp/source/content keys (same shape
+            as read_records); next_cursors maps each requested source
+            code to its cursor value after this read.
+        """
+        cursor = await self._conn.execute(
+            "SELECT read_cursors FROM processes WHERE id = ?", (proc_id,)
+        )
+        row = await cursor.fetchone()
+        cursors = json.loads(row[0]) if row and row[0] else {}
+        cursors = {int(k): v for k, v in cursors.items()}
+
+        where = " OR ".join(
+            f"(source = {code} AND rowid > ?)" for code in source_codes
+        )
+        cursor = await self._conn.execute(
+            f"SELECT rowid, timestamp, source, content FROM proc_{proc_id} "
+            f"WHERE {where} ORDER BY rowid",
+            tuple(cursors.get(code, 0) for code in source_codes),
+        )
+        rows = await cursor.fetchall()
+        records = [
+            {"timestamp": r[1], "source": r[2], "content": r[3]}
+            for r in rows
+        ]
+
+        next_cursors: dict[int, int] = {}
+        for code in source_codes:
+            code_max = max(
+                (r[0] for r in rows if r[2] == code), default=None
+            )
+            next_cursors[code] = (
+                code_max if code_max is not None else cursors.get(code, 0)
+            )
+
+        # Atomic per-source MAX against the current stored JSON value.
+        set_parts = []
+        params: list = []
+        for code in source_codes:
+            path = f'$."{code}"'
+            set_parts.append(
+                f"'{path}', "
+                f"MAX(COALESCE(json_extract(read_cursors, '{path}'), 0), ?)"
+            )
+            params.append(next_cursors[code])
+        await self._conn.execute(
+            "UPDATE processes SET read_cursors = json_set(read_cursors, "
+            + ", ".join(set_parts)
+            + ") WHERE id = ?",
+            (*params, proc_id),
+        )
+        await self._conn.commit()
+
+        return records, next_cursors
+
     async def update_status(
         self, proc_id: int, status: str, exit_code: int | None = None
     ) -> None:
@@ -198,6 +280,13 @@ class Database:
     async def clear_records(self, proc_id: int) -> None:
         """Delete all I/O records for a process (table remains)."""
         await self._conn.execute(f"DELETE FROM proc_{proc_id}")
+        # SQLite reuses rowids starting at 1 once the table is emptied —
+        # reset cursors so records written after the clear stay visible
+        # to read_new.
+        await self._conn.execute(
+            "UPDATE processes SET read_cursors = '{}' WHERE id = ?",
+            (proc_id,),
+        )
         await self._conn.commit()
 
     async def cleanup_process(self, proc_id: int) -> None:

@@ -144,3 +144,29 @@ class TestServerTools:
         await db1.close()
         await manager2.shutdown()
         await db2.close()
+
+    async def test_process_read_new(self, portal):
+        result = await portal.start(
+            command=sys.executable,
+            args=["-c", "print('fresh output')"],
+        )
+        await asyncio.sleep(0.3)
+        records = await portal.read_new(result["id"])
+        assert "fresh output" in "".join(r["content"] for r in records)
+        assert await portal.read_new(result["id"]) == []
+
+    async def test_process_read_new_with_source(self, portal):
+        result = await portal.start(
+            command=sys.executable,
+            args=[
+                "-c",
+                "import sys; "
+                "sys.stdout.write('only-stdout\\n'); "
+                "sys.stderr.write('only-stderr\\n')",
+            ],
+        )
+        await asyncio.sleep(0.3)
+        records = await portal.read_new(result["id"], "stderr")
+        contents = "".join(r["content"] for r in records)
+        assert "only-stderr" in contents
+        assert "only-stdout" not in contents

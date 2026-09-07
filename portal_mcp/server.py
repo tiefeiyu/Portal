@@ -258,6 +258,51 @@ def main():
                     },
                 ),
                 types.Tool(
+                    name="process_read_new",
+                    description=(
+                        "Read new output from a process — records "
+                        "produced since the last call to this tool for "
+                        "the requested source. The server remembers the "
+                        "read position per process and per source; there "
+                        "is no time window, so repeated calls return "
+                        "each record exactly once, in insertion order. "
+                        "Only the requested source's cursor advances — "
+                        "reading stdout never causes stderr records to "
+                        "be skipped, and vice versa. Resets the process "
+                        "idle timer, like process_read.\n"
+                        "\n"
+                        "process_read (time-window) does not affect this "
+                        "tool's cursors; process_clear resets them (next "
+                        "call returns everything since the clear). PTY "
+                        "processes: stderr is merged into stdout and "
+                        "records are arbitrary chunks, not lines — same "
+                        "caveats as process_read. For full-screen TUIs "
+                        "the record stream is garbled fragments — use "
+                        "process_screen."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "id": {
+                                "type": "integer",
+                                "description": "Internal process ID.",
+                            },
+                            "source": {
+                                "type": "string",
+                                "enum": [
+                                    "stdout", "stderr", "both"
+                                ],
+                                "description": (
+                                    "Which stream to read new output "
+                                    "from."
+                                ),
+                                "default": "both",
+                            },
+                        },
+                        "required": ["id"],
+                    },
+                ),
+                types.Tool(
                     name="process_write",
                     description=(
                         "Write content to a process's stdin. "
@@ -570,6 +615,34 @@ def main():
                         )
                     ]
 
+                elif name == "process_read_new":
+                    records = await manager.read_new(
+                        proc_id=arguments["id"],
+                        source=arguments.get("source", "both"),
+                    )
+                    if not records:
+                        return [
+                            types.TextContent(
+                                type="text",
+                                text="No new output.",
+                            )
+                        ]
+                    source_label = {0: "STDIN", 1: "STDOUT", 2: "STDERR"}
+                    lines = []
+                    for r in records:
+                        label = source_label.get(
+                            r["source"], f"SRC{r['source']}"
+                        )
+                        lines.append(
+                            f"[{r['timestamp']}] [{label}] "
+                            f"{r['content']}"
+                        )
+                    return [
+                        types.TextContent(
+                            type="text", text="".join(lines)
+                        )
+                    ]
+
                 elif name == "process_write":
                     result = await manager.write(
                         proc_id=arguments["id"],
@@ -848,7 +921,8 @@ def main():
                         "1. `process_start` — start the command (set "
                         "timeout_ms on long-idle processes)\n"
                         "2. `process_read`  — check what it printed so "
-                        "far\n"
+                        "far (or `process_read_new` for output since "
+                        "the last read)\n"
                         "3. `process_write` — send input when it's "
                         "waiting\n"
                         "4. Repeat 2–3 as the conversation with the "
@@ -898,7 +972,10 @@ def main():
                         "When a process seems hung, read with a "
                         "generous window (duration=10000, unit ms — "
                         "the default 1s window misses older output "
-                        "and looks identical to a hang). Treat as a "
+                        "and looks identical to a hang). "
+                        "process_read_new is NOT the tool for "
+                        "this — it only returns post-cursor "
+                        "output and hides older output. Treat as a "
                         "hang only if reads keep returning empty AND "
                         "process_list shows io_count unchanged after "
                         "several seconds. Set timeout_ms on every "

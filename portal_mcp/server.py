@@ -12,7 +12,7 @@ import mcp.server.stdio
 import mcp.types as types
 from portal_mcp.database import Database
 from portal_mcp.manager import ProcessManager
-from portal_mcp.paths import registry_db_path
+from portal_mcp.paths import ensure_local_gitignore, registry_db_path
 from portal_mcp.registry import Registry
 
 
@@ -94,10 +94,16 @@ async def create_server(
     if db_path is None:
         db_path = _default_db_path()
 
-    # Create the database directory if it doesn't exist
+    # Create the database directory if it doesn't exist, and keep it
+    # out of `git status` without asking the user to configure
+    # anything. Both stay inside the `if db_dir` guard: a bare
+    # filename db_path (e.g. "foo.db") means the database lives in the
+    # current working directory, and writing a `*` .gitignore there
+    # would hide the user's own project files from git.
     db_dir = os.path.dirname(db_path)
     if db_dir:
         os.makedirs(db_dir, exist_ok=True)
+        ensure_local_gitignore(db_dir)
 
     # Delete old database for fresh start
     if os.path.exists(db_path):

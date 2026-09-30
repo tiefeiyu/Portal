@@ -145,6 +145,33 @@ class TestServerTools:
         await manager2.shutdown()
         await db2.close()
 
+    async def test_create_server_gitignores_its_scratch_dir(
+        self, tmp_path, monkeypatch
+    ):
+        """`.portal/` sits in the launch directory, so it must not show
+        up as untracked clutter: the server drops a `*` .gitignore in
+        it."""
+        monkeypatch.chdir(tmp_path)
+        manager, db = await create_server()
+        await manager.shutdown()
+        await db.close()
+        gitignore = tmp_path / ".portal" / ".gitignore"
+        assert gitignore.exists()
+        assert gitignore.read_bytes() == b"*\n"
+
+    async def test_create_server_bare_db_path_writes_no_gitignore(
+        self, tmp_path, monkeypatch
+    ):
+        """A bare filename db_path resolves to the current working
+        directory — the user's own project directory. Writing a `*`
+        .gitignore there would hide their real files from git, so the
+        server must leave it alone."""
+        monkeypatch.chdir(tmp_path)
+        manager, db = await create_server("bare.db")
+        await manager.shutdown()
+        await db.close()
+        assert not (tmp_path / ".gitignore").exists()
+
     async def test_process_read_new(self, portal):
         result = await portal.start(
             command=sys.executable,

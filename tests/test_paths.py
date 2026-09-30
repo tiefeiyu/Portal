@@ -3,7 +3,11 @@ import os
 import sys
 from pathlib import Path
 import pytest
-from portal_mcp.paths import default_data_dir, registry_db_path
+from portal_mcp.paths import (
+    default_data_dir,
+    ensure_local_gitignore,
+    registry_db_path,
+)
 
 
 def test_override_env_wins(monkeypatch, tmp_path):
@@ -49,3 +53,30 @@ def test_env_read_per_call_no_caching(monkeypatch, tmp_path):
 def test_registry_db_path(monkeypatch, tmp_path):
     monkeypatch.setenv("PORTAL_DATA_DIR", str(tmp_path))
     assert registry_db_path() == tmp_path / "programs.db"
+
+
+def test_ensure_local_gitignore_creates_star_file(tmp_path):
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    ensure_local_gitignore(scratch)
+    assert (scratch / ".gitignore").read_bytes() == b"*\n"
+
+
+def test_ensure_local_gitignore_keeps_existing_file(tmp_path):
+    """The user may have put their own rules there; never overwrite."""
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    ignore = scratch / ".gitignore"
+    ignore.write_bytes(b"!keep-me\n")
+    ensure_local_gitignore(scratch)
+    assert ignore.read_bytes() == b"!keep-me\n"
+
+
+def test_ensure_local_gitignore_swallows_oserror(tmp_path):
+    """Writing must be best-effort: an unwritable target (here a path
+    under a regular file, so open() raises FileNotFoundError on
+    Windows) returns silently instead of blocking server startup."""
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_bytes(b"")
+    ensure_local_gitignore(blocker / "nested")  # must not raise
+    assert blocker.read_bytes() == b""
